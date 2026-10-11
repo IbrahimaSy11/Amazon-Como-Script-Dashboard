@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.186
+// @version      23.9.187
 // @description  Sorts tasks in order by earliest Batch Target + Time Left column + Batcher Timer Dashboard
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -28,7 +28,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.186');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.187');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   function cbtAuthPage() {
@@ -8725,9 +8725,11 @@
   var P1H_POSITIVE_CACHE_MS = 90000;
   var P1H_NEGATIVE_CACHE_MS = 180000;
   var P1H_RETRY_MS = 60000;
-  var P1H_REQUEST_GAP_MS = 120;
-  var P1H_MAX_REQUESTS = 1;
-  var P1H_STARTUP_DELAY_MS = 1800;
+  /* Two paced reads provide much faster first-time highlighting while the
+     cache and direct row index keep DOM/network pressure safely bounded. */
+  var P1H_REQUEST_GAP_MS = 60;
+  var P1H_MAX_REQUESTS = 2;
+  var P1H_STARTUP_DELAY_MS = 800;
   var P1H_SESSION_KEY = 'cbt_p1h_positive_v239168';
   var _p1hCache = new Map();       /* job id -> {match, expires} */
   var _p1hRefToId = new Map();     /* visible short reference -> job id */
@@ -9040,7 +9042,7 @@
 
   function p1hScheduleVisibleScan() {
     if (_p1hScheduleTimer !== null || !isDashboardView()) return;
-    var scanDelay = Math.max(40, 450 - (Date.now() - _p1hLastScanAt));
+    var scanDelay = Math.max(40, 250 - (Date.now() - _p1hLastScanAt));
     _p1hScheduleTimer = setTimeout(function(){
       _p1hScheduleTimer = null;
       _p1hLastScanAt = Date.now();
