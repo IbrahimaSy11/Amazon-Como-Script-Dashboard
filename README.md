@@ -2,6 +2,8 @@
 
 A Tampermonkey userscript for the Amazon Fresh COMO Operations Dashboard that helps dispatchers manage batching tasks, associates, deadlines, cart actions, and staffing more efficiently.
 
+**Current documented release: v23.9.187**
+
 ---
 
 ## What It Does
@@ -32,7 +34,22 @@ The countdown updates automatically so you can immediately see how much time rem
 
 Problem Solve, Partially Batched, and Staged for Pickup are excluded from the normal Time Left task logic.
 
-The current version uses the original stable Time Left behavior instead of the later automatic website-clock override.
+The **Time Left** title and countdown values remain centered in the same column at different browser sizes.
+
+---
+
+### 🟨 P-1-H Last Known Location Highlight
+
+Normal task rows are automatically highlighted in yellow when a package inside the task has a **Last Known Location beginning with `P-1-H`**.
+
+The highlight:
+
+- updates automatically when task data changes
+- stays visible when you open a task and return to the dashboard
+- is restored from cache during dashboard navigation
+- uses paced background checks to avoid slowing down the website
+
+Cached results appear immediately. New tasks begin checking shortly after the dashboard loads and are processed in a limited two-request queue.
 
 ---
 
@@ -46,11 +63,11 @@ The panel tracks associate batching activity and performance.
 
 - **Live** — currently active batchers with elapsed time and bags/min
 - **Today** — today's batcher performance
-- **Weekly** — 7-day aggregated performance
-- **Fastest** — top qualifying batching performances
+- **Weekly** — the current Sunday-through-Saturday store week
+- **Fastest** — all qualifying associates ranked by their fastest recorded performance
 - **Names** — associate name lookup
 
-The panel also includes associate search.
+The panel also includes associate search and associate performance profiles.
 
 ---
 
@@ -62,13 +79,21 @@ The top of the Batcher Timer panel shows:
 
 Number of associates currently batching normal tasks.
 
-### 👥 Recommended This Hour
+### 👥 Recommended
 
 Recommended minimum number of batchers based on the current task workload, Batch Targets, cart count, and time remaining.
 
-The recommendation planning cycle updates at **:55 each hour**.
+The recommendation planning cycle begins at **:57 each hour**. The normal **:55–:57** release window is handled separately so newly loading carts do not create an unnecessary staffing spike.
 
 The recommendation is deadline-based and does not depend on individual associate speed.
+
+### 👤 Unassigned
+
+Number of normal tasks that do not currently have an associate assigned.
+
+### 📋 Tasks
+
+Current number of normal tasks on the dashboard.
 
 ### 📦 Remaining
 
@@ -78,7 +103,7 @@ Total remaining package workload.
 
 ## ⚡ Fast Stat Loading
 
-**Batchers, Recommended, and Remaining** are optimized to appear quickly after a page reload.
+**Batchers, Recommended, Unassigned, Tasks, and Remaining** are optimized to appear without blocking the website during a page reload.
 
 The script can immediately show a recent store-specific snapshot while fresh dashboard data finishes loading.
 
@@ -232,6 +257,15 @@ If multiple missing or damaged packages are found, the QR window supports moving
 
 This feature is read-only and does not modify the job.
 
+Missing Package QR checks only:
+
+- normal **Tasks**
+- **Problem Solve**
+
+It does not scan the **Partially Batched** section.
+
+Clicking a QR tile copies that tile's ID.
+
 ---
 
 # ⚡ Faster Cart Actions
@@ -276,15 +310,63 @@ Provides associate username/name suggestions in supported assignment fields.
 
 Autocomplete is limited to relevant associate assignment/search fields so normal search boxes are not affected.
 
+The older floating Associate Search panel is retired. Suggestions now appear directly inside the website's supported associate fields.
+
+---
+
+# 👤 Associate Performance Profiles
+
+Click an associate's name in **Live, Today, Weekly, Fastest, Names, or search results** to open their profile.
+
+The profile supports **Today** and **This week** and shows:
+
+- total carts
+- total packages
+- average rate
+- fastest rate
+- current live rate
+- latest cart rate
+- carts, packages, and rate grouped by completion hour
+
+Click an hour to view each cart's:
+
+- task/cart reference
+- start time
+- finish time
+- total time taken
+- packages
+- rate
+
+All rate values use **Packages/Minute**. Duplicate or unverified records are excluded from verified totals and rates.
+
+---
+
+# 📅 Data Periods & Reset Behavior
+
+- **Today** resets automatically at store midnight.
+- **Weekly** uses a Sunday-through-Saturday store week and resets when the new week begins.
+- **Fastest** does not reset with Today or Weekly. It changes only when qualifying performance data changes.
+- Repeated API responses, sync events, and dashboard refreshes are deduplicated so the same completed cart does not inflate totals.
+
+---
+
+# 📐 Responsive Sizing
+
+The dashboard, Run menu, highlighted-text QR window, Missing Package QR window, associate autocomplete, and profile window automatically fit the available browser viewport.
+
+Scaling is recalculated on browser resize without a permanent sizing interval. Text, buttons, rows, and QR codes keep their layout and avoid wrapping or overlapping.
+
+The dashboard can also be resized vertically by dragging its bottom handle.
+
 ---
 
 # 📱 QR Code Tools
 
 The script includes QR functionality for operational values.
 
-Selected text can be displayed as a QR code for quick scanner use.
+Selected text can be displayed as a QR code for quick scanner use. The popup supports dragging and automatically fits inside the current browser viewport.
 
-The QR stays open until dismissed instead of automatically closing after a timer.
+The selected-text QR closes automatically after **60 seconds**, or immediately when dismissed manually.
 
 ---
 
@@ -294,7 +376,8 @@ The script is designed to minimize impact on the COMO dashboard.
 
 Performance optimizations include:
 
-- no continuous whole-page scanning
+- dashboard UI mounts after the website's first paint
+- no continuous high-frequency whole-page scanning
 - targeted DOM updates
 - coalesced UI rendering
 - guarded network requests
@@ -308,6 +391,10 @@ Performance optimizations include:
 - sequential cart-action API writes
 - reduced artificial delays between cart actions
 - recent-name suggestions stored locally without extra network requests
+- P-1-H results cached by task
+- a maximum of two paced P-1-H detail requests at once
+- direct task-to-row highlight updates instead of rescanning every row after each response
+- longer retry backoff after failed detail requests
 
 The goal is to add dispatcher tools without making the normal COMO website feel slow.
 
@@ -320,13 +407,17 @@ The goal is to add dispatcher tools without making the normal COMO website feel 
 | Early task sorting | Earliest Batch Target gets priority |
 | Same-time package priority | Most packages first when Batch Targets match |
 | Time Left | Live deadline countdown |
+| P-1-H highlight | Yellow task highlight when Last Known Location starts with P-1-H |
 | Live tab | Current batchers and elapsed time |
 | Today tab | Daily associate performance |
-| Weekly tab | 7-day associate performance |
-| Fastest tab | Top qualifying batching performances |
+| Weekly tab | Current Sunday-through-Saturday associate performance |
+| Fastest tab | All qualifying associates ranked by fastest performance |
 | Names tab | Associate lookup |
+| Associate profiles | Hourly carts, packages, rates, and cart timing details |
 | Batchers | Current active batcher count |
 | Recommended | Deadline-based staffing recommendation |
+| Unassigned | Current unassigned normal-task count |
+| Tasks | Current normal-task count |
 | Remaining | Remaining package workload |
 | Fast stats loading | Shows recent store-specific stats while fresh data loads |
 | Assign Cart | Assign selected associates to prioritized tasks |
@@ -340,7 +431,7 @@ The goal is to add dispatcher tools without making the normal COMO website feel 
 | Missing/Damaged QR | QR codes for problem packages and cart locations |
 | Associate autocomplete | Suggestions in supported associate fields |
 | QR Generator | Create scanner-friendly QR codes |
-| Click to copy | Click supported associate names to copy |
+| Click QR to copy | Click a Missing Package QR tile to copy its ID |
 | Resizable panel | Resize the Batcher Timer panel |
 
 ---
@@ -404,10 +495,10 @@ You can:
 - search for an associate
 - view elapsed batching time
 - view bags/min
-- view Batchers, Recommended, and Remaining
-- click supported associate names to copy them
-- resize the dashboard panel
-- reset the panel size
+- view Batchers, Recommended, Unassigned, Tasks, and Remaining
+- click an associate name to open their performance profile
+- resize the dashboard vertically
+- collapse or expand the dashboard
 
 ---
 
@@ -453,7 +544,7 @@ Use Tampermonkey's update feature to install the latest version.
 
 Current script version documented here:
 
-**v23.9.119**
+**v23.9.187**
 
 ---
 
