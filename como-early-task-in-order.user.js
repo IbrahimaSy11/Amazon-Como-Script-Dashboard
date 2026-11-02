@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.195
+// @version      23.9.198
 // @description  Sorts tasks in order by earliest Batch Target + Time Left column + Batcher Timer Dashboard
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -28,7 +28,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.195');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.198');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   function cbtAuthPage() {
@@ -1891,7 +1891,8 @@
     /* Navbar: shared outer-control metrics; Run's label is never a second button. */
     #cbt-header { gap: 16px; flex-wrap: wrap; padding: 14px 18px; }
     #cbt-controls { gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
-    #cbt-panel #cbt-controls > span {
+    #cbt-panel #cbt-controls > span,
+    #cbt-panel #cbt-controls > button {
       display: inline-flex !important; align-items: center; justify-content: center;
       box-sizing: border-box; height: 32px !important; min-height: 32px;
       min-width: 34px; padding: 0 10px !important; border-radius: 6px !important;
@@ -1901,6 +1902,13 @@
     }
     #cbt-panel #cbt-controls > #cbt-scale-reset { min-width: 54px; font-variant-numeric: tabular-nums; }
     #cbt-panel #cbt-controls > #cbt-afa-btn { min-width: 78px; transform: none !important; }
+    #cbt-panel #cbt-controls > button#cbt-afa-btn {
+      appearance:none; font-family:inherit !important; cursor:pointer;
+      pointer-events:auto !important; touch-action:manipulation; user-select:none;
+    }
+    #cbt-panel #cbt-controls > button#cbt-afa-btn:hover { box-shadow:0 0 0 2px rgba(41,121,255,.35); }
+    #cbt-panel #cbt-controls > button#cbt-afa-btn:focus-visible { outline:2px solid #2979ff; outline-offset:3px; }
+    #cbt-panel #cbt-controls > button#cbt-afa-btn > .cbt-afa-lbl { pointer-events:none; user-select:none; }
     #cbt-panel #cbt-controls #cbt-afa-btn > .cbt-afa-lbl,
     #cbt-panel.dark #cbt-controls #cbt-afa-btn > .cbt-afa-lbl {
       display: inline; border: 0 !important; padding: 0 !important; margin: 0;
@@ -6559,15 +6567,77 @@
   var _cbtPassiveQueue = [], _cbtPassiveBusy = false;
   var _cbtLastPageSnapshotAt = 0;
   var _cbtLastPageSnapshotStore = '';
-  function cbtQueuePassive(payload, requestStore, snapshot, sequence) {
+  /* v23.9.196: typing in any page field (e.g. the Packages Scannable ID
+     filter) briefly postpones parsing/walking of NON-live API responses so
+     that work never lands between keystrokes. One passive capture listener. */
+  var _cbtLastTypingAt = 0, CBT_TYPING_QUIET_MS = 600;
+  function cbtNoteTyping(e) {
+    try { if (e && e.target && cbtIsOwnUiNode(e.target)) return; } catch(err) {}
+    _cbtLastTypingAt = Date.now();
+  }
+  document.addEventListener('keydown', cbtNoteTyping, true);
+  document.addEventListener('input', cbtNoteTyping, true);
+  /* Endpoint key for coalescing. Task/job/summary/cart endpoints keep their
+     full URL (never coalesced). Other endpoints (e.g. package searches) use
+     the path only, so a newer response supersedes an unprocessed older one. */
+  function cbtPassiveKey(url) {
+    try {
+      var u = new URL(String(url || ''), location.href);
+      if (/job|task|summary|cart|assign|complete/i.test(u.pathname)) return 'full:' + u.pathname + u.search;
+      return 'path:' + u.pathname;
+    } catch(e) { return 'raw:' + String(url || ''); }
+  }
+  function cbtQueuePassive(payload, requestStore, snapshot, sequence, url) {
     sequence = sequence || ++_cbtRequestSequence;
     var store = requestStore == null ? STORE_ID : requestStore;
     if (snapshot) _cbtPassiveQueue = _cbtPassiveQueue.filter(function(entry){ return !entry.snapshot || entry.store !== store || entry.sequence > sequence; });
-    _cbtPassiveQueue.push({payload: payload, store: store, snapshot: !!snapshot, sequence: sequence});
+    var key = snapshot ? '' : cbtPassiveKey(url);
+    if (key && key.indexOf('path:') === 0) {
+      var superseded = false, namesOnly = [];
+      _cbtPassiveQueue = _cbtPassiveQueue.filter(function(entry){
+        if (entry.snapshot || entry.store !== store || entry.key !== key) return true;
+        if (entry.sequence > sequence) { superseded = true; return true; }
+        /* Superseded: keep only the cheap associate-name harvest. */
+        namesOnly.push({payload: entry.payload, store: entry.store, snapshot: false, sequence: entry.sequence, key: 'names', namesOnly: true});
+        return false;
+      });
+      if (superseded) namesOnly.push({payload: payload, store: store, snapshot: false, sequence: sequence, key: 'names', namesOnly: true});
+      _cbtPassiveQueue = _cbtPassiveQueue.concat(namesOnly);
+      if (superseded) { cbtKickPassive(); return; }
+    }
+    _cbtPassiveQueue.push({payload: payload, store: store, snapshot: !!snapshot, sequence: sequence, key: key});
+    cbtKickPassive();
+  }
+  /* Names from a superseded response: a regex over the raw text replaces a
+     full JSON.parse + two recursive walks. Same fields captureName() reads. */
+  var CBT_NAME_FIELD_RE = /"(?:associateId|associate|driverAssignment)"\s*:\s*"((?:[^"\\]|\\.){1,120})"/g;
+  function cbtHarvestNamesOnly(payload) {
+    if (payload && typeof payload === 'object') { deepCaptureNames(payload, 0); return; }
+    var text = String(payload || ''), m, added = false;
+    CBT_NAME_FIELD_RE.lastIndex = 0;
+    while ((m = CBT_NAME_FIELD_RE.exec(text))) {
+      var name; try { name = JSON.parse('"' + m[1] + '"'); } catch(e) { continue; }
+      if (captureName({ associate: name })) added = true;
+    }
+    if (added && activeTab === 'names') renderNames();
+  }
+  function cbtKickPassive() {
     if (_cbtPassiveBusy) return;
     _cbtPassiveBusy = true;
     function drain() {
+      var quietFor = Date.now() - _cbtLastTypingAt;
+      if (quietFor < CBT_TYPING_QUIET_MS && _cbtPassiveQueue.length && !_cbtPassiveQueue[0].snapshot) {
+        /* Live snapshots ahead of non-live work are allowed through. */
+        var liveIndex = -1;
+        for (var qi = 0; qi < _cbtPassiveQueue.length; qi++) { if (_cbtPassiveQueue[qi].snapshot) { liveIndex = qi; break; } }
+        if (liveIndex < 0) { setTimeout(drain, CBT_TYPING_QUIET_MS - quietFor + 20); return; }
+        _cbtPassiveQueue.unshift(_cbtPassiveQueue.splice(liveIndex, 1)[0]);
+      }
       var next = _cbtPassiveQueue.shift();
+      if (next && next.namesOnly) {
+        try { if (next.store === STORE_ID) cbtHarvestNamesOnly(next.payload); } catch(eNames) {}
+        next = null;
+      }
       try {
         if (next && next.store === STORE_ID && cbtApplicationReady()) {
           var payload = typeof next.payload === 'string' ? JSON.parse(next.payload) : next.payload;
@@ -6604,7 +6674,7 @@
     if (cbtCaptureUrl(requested)) promise.then(function(resp){
       try {
         if (!resp.ok || resp.redirected || !/json/i.test(resp.headers.get('content-type') || '')) return;
-        resp.clone().text().then(function(raw){ cbtQueuePassive(raw, requestStore, snapshot, requestSequence); }).catch(function(){});
+        resp.clone().text().then(function(raw){ cbtQueuePassive(raw, requestStore, snapshot, requestSequence, requestUrl); }).catch(function(){});
       } catch(e) {}
     }, function(){});
     return promise;
@@ -6620,8 +6690,8 @@
       if (!cbtCaptureUrl(this._cbtUrl) || this.status < 200 || this.status >= 300 ||
           !/json/i.test(this.getResponseHeader('content-type') || '')) return;
       if (this.responseURL && !cbtCaptureUrl(this.responseURL)) return;
-      if (this.responseType === 'json') cbtQueuePassive(this.response,this._cbtStore,/\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(this._cbtUrl),this._cbtSequence);
-      else if (!this.responseType || this.responseType === 'text') cbtQueuePassive(this.responseText,this._cbtStore,/\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(this._cbtUrl),this._cbtSequence);
+      if (this.responseType === 'json') cbtQueuePassive(this.response,this._cbtStore,/\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(this._cbtUrl),this._cbtSequence,this._cbtUrl);
+      else if (!this.responseType || this.responseType === 'text') cbtQueuePassive(this.responseText,this._cbtStore,/\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(this._cbtUrl),this._cbtSequence,this._cbtUrl);
     } catch(e) {}
   }
   XMLHttpRequest.prototype.send = function() {
@@ -6682,9 +6752,9 @@
         '<span id="cbt-title">Batcher Timers</span>' +
         '<div id="cbt-controls">' +
           '<span id="cbt-theme-btn" title="Toggle Dark/Light">🌙</span>' +
-          '<span id="cbt-afa-btn" title="Open cart actions">' +
+          '<button type="button" id="cbt-afa-btn" title="Open cart actions" aria-haspopup="dialog" aria-expanded="false" aria-controls="cbt-afa-overlay">' +
             '<span class="cbt-afa-lbl">▶ Run</span>' +
-          '</span>' +
+          '</button>' +
           '<span id="cbt-collapse-btn" title="Collapse/Expand">▲</span>' +
         '</div>' +
       '</div>' +
@@ -6880,6 +6950,7 @@
      and event listeners survive and it re-mounts instantly on the dashboard. */
   function detachMainPanel() {
     var p = document.getElementById('cbt-panel');
+    if (p && p._cbtStopResize) p._cbtStopResize();
     if (p) p.remove();
   }
 
@@ -7058,6 +7129,29 @@
     requestUnifiedSearchCount();
   }
 
+  function cbtHandleRunClick(e) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    /* Preserve Run/View/Stop behavior; native button activation also supports
+       Enter and Space without adding competing keyboard/pointer handlers. */
+    if (_afaRunning) {
+      if (!_afaOverlay) { afaProgressView(_afaRunState && _afaRunState.mode); return; }
+      _afaStop = true;
+      afaSetBtn('⏹ Stopping…', true);
+      var modalStop = document.querySelector('#cbt-afa-card [data-afa="stop"]');
+      if (modalStop) { modalStop.textContent='⏹ Stopping…'; modalStop.disabled=true; }
+      return;
+    }
+    try { afaConfirm(); }
+    catch(error) {
+      // A failed menu render must not look like an ignored click.
+      try { console.error('COMO: could not open Cart Actions',error); } catch(ignore) {}
+      afaShell('Cart Actions',
+        '<div role="alert">Cart Actions could not open. No task action was started. Close this message and try Run again.</div>',
+        '<button type="button" class="cbt-afa-act" data-afa="close">Close</button>');
+      var close = _afaOverlay && _afaOverlay.querySelector('[data-afa="close"]');
+      if (close) close.addEventListener('click',afaClose);
+    }
+  }
   function attachPanelEvents(panel2) {
     var unifiedSearch = panel2.querySelector('#cbt-unified-search-input');
     if (unifiedSearch) unifiedSearch.value = dashboardSearchTerm;
@@ -7089,27 +7183,7 @@
     });
 
     var afaBtn = panel2.querySelector('#cbt-afa-btn');
-    if (afaBtn) afaBtn.addEventListener('click', function(e){
-      e.stopPropagation();
-
-      /* Code-editor style Run / Stop control:
-         idle    -> ▶ Run opens the independent Cart Actions menu
-         running -> ⏹ Stop requests the current action to stop */
-      if (_afaRunning) {
-        if (!_afaOverlay) { afaProgressView(_afaRunState && _afaRunState.mode);return; }
-        _afaStop = true;
-        afaSetBtn('⏹ Stopping…', true);
-
-        var modalStop = document.querySelector('#cbt-afa-card [data-afa="stop"]');
-        if (modalStop) {
-          modalStop.textContent = '⏹ Stopping…';
-          modalStop.disabled = true;
-        }
-        return;
-      }
-
-      try { afaConfirm(); } catch(err) {}
-    });
+    if (afaBtn) afaBtn.addEventListener('click',cbtHandleRunClick);
 
     /* v23.9.84: restore the original VERTICAL dashboard length.
        Width stays exactly as before. The compact 240px default from older
@@ -7195,31 +7269,31 @@
     });
 
     applyUiScale();
-    var isDragging = false, dragStartY = 0, dragStartH = 350;
-    panel2.querySelector('#cbt-drag-bottom').addEventListener('mousedown', function(e) {
-      isDragging = true;
+    var dragStartY = 0, dragStartH = 350, dragContentH = 350, resizedH = null;
+    var resizeBody = null, resizeTabs = null, resizeSearch = null;
+    panel2._cbtStopResize = cbtBindMouseDrag(panel2.querySelector('#cbt-drag-bottom'), function(e) {
       dragStartY = e.clientY;
-      var body = panel2.querySelector('#cbt-body');
-      dragStartH = body ? body.offsetHeight : 270;
-      e.preventDefault();
+      resizeBody = panel2.querySelector('#cbt-body');
+      if (!resizeBody) return false;
+      dragStartH = resizeBody.offsetHeight || 350;
+      dragContentH = resizeBody.scrollHeight || 9999;
+      resizeTabs = panel2.querySelector('#cbt-tabs');
+      resizeSearch = panel2.querySelector('#cbt-unified-search');
+      resizedH = null;
       e.stopPropagation();
-    });
-    document.addEventListener('mousemove', function(e) {
-      if (!isDragging) return;
-      var body = panel2.querySelector('#cbt-body');
-      var tabs = panel2.querySelector('#cbt-tabs');
-      if (!body) return;
-      var contentH = body.scrollHeight || 9999;
-      var newH = Math.min(contentH, Math.max(350, dragStartH + (e.clientY - dragStartY) / (HEADER_FIXED_SCALE * _uiScale)));
-      body.style.height = newH + 'px';
-      body.style.maxHeight = newH + 'px';
-      body.style.minHeight = newH + 'px';
-      if (tabs) tabs.style.display = '';
-      var searchBar2 = panel2.querySelector('#cbt-unified-search');
-      if (searchBar2) searchBar2.style.display = '';
-      try { localStorage.setItem('cbt_body_h', newH); } catch(ex) {}
-    });
-    document.addEventListener('mouseup', function() { isDragging = false; });
+    }, function(e) {
+      var newH = Math.min(dragContentH, Math.max(350, dragStartH + (e.clientY - dragStartY) / (HEADER_FIXED_SCALE * _uiScale)));
+      if (newH === resizedH) return;
+      resizedH = newH;
+      resizeBody.style.height = newH + 'px';
+      resizeBody.style.maxHeight = newH + 'px';
+      resizeBody.style.minHeight = newH + 'px';
+      if (resizeTabs) resizeTabs.style.display = '';
+      if (resizeSearch) resizeSearch.style.display = '';
+    }, function() {
+      if (resizedH !== null) { try { localStorage.setItem('cbt_body_h', resizedH); } catch(ex) {} }
+      resizeBody = resizeTabs = resizeSearch = null;
+    }, function(){ return panel2.isConnected; });
 
     try {
       var savedH = localStorage.getItem('cbt_body_h');
@@ -8024,38 +8098,82 @@
     var c = clampTpPos(tp, p.left, p.top);
     tpSetPos(tp, c.left, c.top);
   }
+  var _cbtActiveDragStops = new Set();
+  function cbtCancelUiDrags() {
+    Array.from(_cbtActiveDragStops).forEach(function(stop){ stop(); });
+  }
+  function cbtBindMouseDrag(handle, start, move, finish, connected) {
+    var active=false, frame=null, latest=null;
+    var raf=typeof requestAnimationFrame==='function'?requestAnimationFrame:function(fn){return setTimeout(fn,16);};
+    var caf=typeof cancelAnimationFrame==='function'?cancelAnimationFrame:clearTimeout;
+    function flush() {
+      frame=null;
+      if (!active || !connected()) { stop(); return; }
+      var point=latest; latest=null;
+      if(point)move(point);
+    }
+    function stop(e) {
+      if (!active) return;
+      // Finish the last pending position only for a normal release. Never
+      // measure or move an off-page panel during blur/navigation cleanup.
+      if(e && e.type==='mouseup' && connected()) {
+        if(frame!==null){caf(frame);frame=null;}
+        if(latest){var point=latest;latest=null;move(point);}
+      }
+      active=false;
+      if(frame!==null){caf(frame);frame=null;}
+      latest=null;
+      document.removeEventListener('mousemove',onMove,true);
+      document.removeEventListener('mouseup',stop,true);
+      document.removeEventListener('visibilitychange',onVisibility,true);
+      window.removeEventListener('blur',stop,true);
+      _cbtActiveDragStops.delete(stop);
+      finish();
+    }
+    function onVisibility(){if(document.hidden)stop();}
+    function onMove(e) {
+      if(!active)return;
+      if(!connected() || (typeof e.buttons==='number' && !(e.buttons & 1))){stop();return;}
+      latest={clientX:e.clientX,clientY:e.clientY};
+      if(frame===null)frame=raf(flush);
+    }
+    if(handle)handle.addEventListener('mousedown',function(e){
+      if(e.button!==0 || !connected())return;
+      cbtCancelUiDrags();
+      if(start(e)===false)return;
+      active=true; latest=null;
+      _cbtActiveDragStops.add(stop);
+      document.addEventListener('mousemove',onMove,true);
+      document.addEventListener('mouseup',stop,true);
+      document.addEventListener('visibilitychange',onVisibility,true);
+      window.addEventListener('blur',stop,true);
+      e.preventDefault();
+    });
+    return stop;
+  }
   function tpAttachDrag(tp) {
     var header = tp.querySelector('#cbt-tp-header');
     if (!header) return;
-    var dragging = false, startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    var startX = 0, startY = 0, startLeft = 0, startTop = 0, lastPosition = null;
 
-    header.addEventListener('mousedown', function(e){
+    tp._cbtStopDrag = cbtBindMouseDrag(header,function(e){
       /* the +/-, theme and roll buttons must stay clickable */
-      if (e.target.closest('#cbt-tp-controls')) return;
-      if (e.button !== 0) return;
+      if (e.target.closest('#cbt-tp-controls')) return false;
       var r = tp.getBoundingClientRect();
-      dragging = true;
       startX = e.clientX; startY = e.clientY;
       startLeft = r.left;  startTop = r.top;
       /* pin to left/top so dragging works regardless of the right-anchored default */
       tpSetPos(tp, r.left, r.top);
+      lastPosition = {left:r.left,top:r.top};
       tp.classList.add('cbt-tp-dragging');
-      e.preventDefault();
-    });
-
-    document.addEventListener('mousemove', function(e){
-      if (!dragging) return;
+    },function(e){
       var c = clampTpPos(tp, startLeft + (e.clientX - startX), startTop + (e.clientY - startY));
       tpSetPos(tp, c.left, c.top);
-    });
-
-    document.addEventListener('mouseup', function(){
-      if (!dragging) return;
-      dragging = false;
+      lastPosition = c;
+    },function(){
       tp.classList.remove('cbt-tp-dragging');
-      var p = tpCurrentPos(tp);
-      saveTpPos(p.left, p.top);
-    });
+      if(lastPosition)saveTpPos(lastPosition.left,lastPosition.top);
+    },function(){return tp.isConnected;});
 
     /* if the window shrinks, pull the panel back into view */
     window.addEventListener('resize', function(){
@@ -8768,6 +8886,7 @@
        recycled. composedPath() is captured now for shadow-root support. */
     var snapshot = {
       target: event ? event.target : null,
+      route: location.href,
       path: []
     };
     try {
@@ -8782,6 +8901,7 @@
        task is enough; no repeated checking is needed. */
     _qrSelectionTimer = setTimeout(function(){
       _qrSelectionTimer = 0;
+      if (location.href !== snapshot.route || (snapshot.target && snapshot.target.isConnected === false)) return;
       qrOpenCurrentSelection(snapshot);
     }, 0);
   }
@@ -9838,7 +9958,7 @@
                 /Scannable\s*Id/i.test(renderedText) &&
                 /Packages/i.test(renderedText) &&
                 Date.now() - started > 900) {
-              finish(null);
+              finish({ missingIds: [], problemPackages: [], cart: '', definitiveNone: true });
               return;
             }
           } catch(e2) {}
@@ -9869,7 +9989,7 @@
 
         /* If this JSON clearly contained package/status data and none was
            MISSING/DAMAGED, trust it and skip the heavier page probe. */
-        if (parsed.sawPackageSignals) return null;
+        if (parsed.sawPackageSignals) return { missingIds: [], problemPackages: [], cart: '', definitiveNone: true };
       }
 
       /* Some deployments keep package rows in the Angular job-details page
@@ -9905,7 +10025,29 @@
   /* Collect every verified missing-package ID across every requested section.
      Each entry keeps its own task/cart context so the carousel can show one
      missing package at a time without mixing carts between jobs. */
-  function afaFindAllMissingJobs(candidates, onProgress, shouldContinue) {
+  var AFA_MISSING_CACHE_MS = 90000, _afaMissingProbeCache = new Map();
+  function afaProbeMissingJobCached(item, shouldContinue) {
+    var key = String(STORE_ID) + '|' + String(item && item.id);
+    var hit = _afaMissingProbeCache.get(key);
+    if (hit && Date.now() - hit.at < AFA_MISSING_CACHE_MS) {
+      if (!hit.value) return Promise.resolve(null);
+      return Promise.resolve(Object.assign({}, hit.value, {
+        ref: item.ref, id: item.id, section: item.section || 'Tasks'
+      }));
+    }
+    var store = STORE_ID;
+    return afaProbeMissingJob(item, shouldContinue).then(function(info){
+      var positive = !!(info && info.missingIds && info.missingIds.length);
+      if (store === STORE_ID && (positive || (info && info.definitiveNone))) {
+        _afaMissingProbeCache.delete(key);
+        _afaMissingProbeCache.set(key, { at: Date.now(), value: positive ? info : null });
+        while (_afaMissingProbeCache.size > 300) _afaMissingProbeCache.delete(_afaMissingProbeCache.keys().next().value);
+      }
+      return info;
+    });
+  }
+
+  function afaFindAllMissingJobs(candidates, onProgress, shouldContinue, useCache) {
     candidates = candidates || [];
     var idx = 0;
     var entries = [];
@@ -9922,7 +10064,7 @@
         try { onProgress(idx, candidates.length, item); } catch(e) {}
       }
 
-      return afaProbeMissingJob(item, shouldContinue).then(function(info){
+      return (useCache ? afaProbeMissingJobCached : afaProbeMissingJob)(item, shouldContinue).then(function(info){
         if (info && info.missingIds && info.missingIds.length) {
           var packages = Array.isArray(info.problemPackages) && info.problemPackages.length
             ? info.problemPackages
@@ -10615,7 +10757,9 @@
   function afaSetBtn(text, busy) {
     var b = document.getElementById('cbt-afa-btn');
     if (!b) return;
-    b.innerHTML = '<span class="cbt-afa-lbl">' + text + '</span>';
+    var label = b.querySelector('.cbt-afa-lbl');
+    if (!label) { label=document.createElement('span');label.className='cbt-afa-lbl';b.appendChild(label); }
+    if (label.textContent !== text) label.textContent = text;
     if (busy) b.classList.add('busy'); else b.classList.remove('busy');
   }
 
@@ -10625,10 +10769,14 @@
     _afaMissingMenuCheckSeq++;
     if (_afaOverlay && _afaOverlay.parentNode) _afaOverlay.parentNode.removeChild(_afaOverlay);
     _afaOverlay = null;
+    var runButton = document.getElementById('cbt-afa-btn');
+    if (runButton) runButton.setAttribute('aria-expanded','false');
     if (_afaRunning) afaSetBtn('▶ Running — View', true);
     else { _afaRunState=null; afaSetBtn('▶ Run', false); }
   }
   function afaShell(title, bodyHtml, footHtml) {
+    var runButton = document.getElementById('cbt-afa-btn');
+    if (runButton) runButton.setAttribute('aria-expanded','true');
     // Switching to another view invalidates read-only menu discovery, but
     // never stops an explicitly started assignment/completion action queue.
     _afaMissingMenuCheckSeq++;
@@ -10914,7 +11062,7 @@
               copy.textContent = 'Checking ' + (item.section || 'Tasks') +
                 ' · ' + done + ' of ' + total + '…';
             }
-          }, missingCheckActive).then(function(info){
+          }, missingCheckActive, true).then(function(info){
             setMissingMenuState(info || null, true);
           }).catch(function(){
             setMissingMenuState(null, true);
@@ -11783,6 +11931,7 @@
     if (!input || input._cbtAcFocused) return;
     input._cbtAcFocused = true;
     var tries = 0, MAX = 40;              /* ~4s of settling at most */
+    var focusRoute = location.href;
 
     function userIsElsewhere() {
       var a = acDeepActive();
@@ -11796,7 +11945,7 @@
     }
 
     function attempt(){
-      if (++tries > MAX || !input.isConnected) return;
+      if (++tries > MAX || !input.isConnected || location.href !== focusRoute) return;
       var r;
       try { r = input.getBoundingClientRect(); } catch(e) { return; }
       if (!r || (!r.width && !r.height)) { again(100); return; }   /* not laid out yet */
@@ -12168,13 +12317,16 @@
   }
 
   function installRouteHealth() {
-    var lastHandledRoute = null, highlightRetry = null;
+    var lastHandledRoute = null, highlightRetry = null, routeUiTimer = null;
     /* React immediately to real SPA route changes. Polling below is only a
        slower safety net for unusual route transitions the History patch misses. */
     function onRoute() {
       var route = location.pathname + location.search + location.hash;
       if (route === lastHandledRoute) return;
       lastHandledRoute = route;
+      cbtCancelUiDrags();
+      if (_qrSelectionTimer) { clearTimeout(_qrSelectionTimer); _qrSelectionTimer = 0; }
+      if (routeUiTimer !== null) { clearTimeout(routeUiTimer); routeUiTimer = null; }
       if (highlightRetry !== null) { clearTimeout(highlightRetry); highlightRetry = null; }
       var nextStore = (location.pathname.match(/\/store\/([^/]+)/i) || [])[1] || '';
       if (nextStore !== STORE_ID) {
@@ -12205,7 +12357,12 @@
       try { ensureSortAttachment(); } catch(e0) {}
       if (isDashboardView()) cbtQuickDashboardMount();
       else panelHealthCheck();
-      taskPanelHealthCheck();
+      // Only mount the search UI for the final route in a rapid navigation
+      // burst, after the native history callback has returned.
+      routeUiTimer = setTimeout(function(){
+        routeUiTimer = null;
+        if (location.pathname + location.search + location.hash === route) taskPanelHealthCheck();
+      },0);
       if (isDashboardView()) {
         try { p1hApplyCachedToNode(document.body); } catch(eP1hImmediate) {}
         try { p1hScheduleVisibleScan(); } catch(eP1hRoute) {}
