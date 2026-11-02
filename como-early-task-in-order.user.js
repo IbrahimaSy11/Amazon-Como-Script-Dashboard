@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.198
-// @description  Sorts tasks in order by earliest Batch Target + Time Left column + Batcher Timer Dashboard
+// @version      23.9.199
+// @description  Lightweight summary counters, Run actions, task order, Time Left, QR and associate name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
 // @match        https://na.store-management.f3.amazon.dev/*
@@ -18,6 +18,13 @@
 (function () {
   'use strict';
 
+  /* LIGHTWEIGHT EDITION v23.9.199
+     Header + five summary counters + Run; fixed dark screenshot appearance.
+     No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
+     Assignment name suggestions, new-name capture and name sync remain.
+     Completed-cart data stays available to the staffing recommendation.
+     Install IN PLACE OF the full script; do not enable both editions. */
+
   /* Hidden eligibility / Missing Package probes load real job-details pages
      in same-origin iframes. NEVER start a second copy of this full userscript
      inside those probe frames. The Amazon page inside the frame still loads
@@ -28,7 +35,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.198');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.199');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   function cbtAuthPage() {
@@ -51,13 +58,6 @@
 
   var style = document.createElement('style');
   style.textContent = `
-    /* ═══════════════════════════════════════════════════
-       COMO DASHBOARD — Unified Design System v21.7
-       Palette: Navy chrome · White body · Blue accent
-       Data: tabular-nums mono for all rates/times
-    ═══════════════════════════════════════════════════ */
-
-    /* ── Design tokens ── */
     :root {
       --cb-navy:      #0d1b2a;
       --cb-navy2:     #162236;
@@ -77,17 +77,15 @@
       --cb-mono:      "SF Mono", "Fira Code", "Consolas", monospace;
       --cb-sans:      -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
     }
-
-    /* ── Time Left column (task sorting) — ORIGINAL, untouched ── */
     .etf-timeleft {
       font-size: inherit; font-weight: 600;
       font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
       background: none !important; border: none !important;
       padding: 0 !important; border-radius: 0 !important; white-space: nowrap;
     }
-    .etf-timeleft.overdue  { color: #f85149; font-weight: 700; }
+    .etf-timeleft.overdue { color: #f85149; font-weight: 700; }
     .etf-timeleft.critical { color: #e3b341; }
-    .etf-timeleft.ok       { color: #3fb950; }
+    .etf-timeleft.ok { color: #3fb950; }
     .etf-col-header {
       font-size: inherit; font-weight: 400; color: #333;
       font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
@@ -100,10 +98,6 @@
       transform: translateY(-50%); line-height: 1;
     }
     .etf-col-cell { display: flex; align-items: center; justify-content: center; text-align: center; }
-
-    /* ══════════════════════════════════════
-       BATCHER TIMER PANEL — main board
-    ══════════════════════════════════════ */
     #cbt-panel {
       width: 100%; background: var(--cb-surface);
       border: 1px solid var(--cb-border);
@@ -137,8 +131,6 @@
       border: 1px solid var(--cb-border);
     }
     #cbt-controls > span:hover { background: var(--cb-blue); color: #fff; border-color: var(--cb-blue); }
-
-    /* ── Stats bar ── */
     #cbt-stats-bar {
       display: flex; justify-content: stretch; align-items: stretch;
       flex-wrap: nowrap;
@@ -183,209 +175,11 @@
       white-space: nowrap;
     }
     #cbt-stat-delta.need-more { display: inline-block; color: #ff3d3d; }
-    #cbt-stat-delta.extra     { display: inline-block; color: #3fb950; }
-
-    /* ── Tabs ── */
-    #cbt-tabs {
-      display: flex;
-      background: #f8fafc;
-      border-bottom: 1px solid var(--cb-border);
-    }
-    .cbt-tab {
-      flex: 1; text-align: center; padding: 9px 0; font-size: 11px;
-      font-weight: 700; color: var(--cb-text2); cursor: pointer;
-      white-space: nowrap;
-      text-transform: uppercase; letter-spacing: 0.1em;
-      border-bottom: 2px solid transparent; transition: all 0.15s;
-      position: relative;
-    }
-    .cbt-tab:hover { color: var(--cb-navy); }
-    .cbt-tab.active { color: var(--cb-blue); border-bottom-color: var(--cb-blue); }
-
-    /* ── Body / table ── */
-    #cbt-body {
-      padding: 0; height: 350px; max-height: 350px; min-height: 350px;
-      overflow-y: auto; background: var(--cb-surface);
-      scrollbar-width: thin; scrollbar-color: var(--cb-border) transparent;
-    }
-    #cbt-body::-webkit-scrollbar { width: 5px; }
-    #cbt-body::-webkit-scrollbar-track { background: transparent; }
-    #cbt-body::-webkit-scrollbar-thumb { background: var(--cb-border); border-radius: 3px; }
-
-    #cbt-table, #cbt-hist-table, #cbt-weekly-table, #cbt-names-table {
-      width: 100%; border-collapse: collapse;
-    }
-    #cbt-hist-table, #cbt-weekly-table { table-layout: fixed; }
-
-    /* TODAY: lock all five columns so Latest Avg is always visible. */
-    #cbt-hist-table th:nth-child(1), #cbt-hist-table td:nth-child(1) { width: 36%; }
-    #cbt-hist-table th:nth-child(2), #cbt-hist-table td:nth-child(2) { width: 13%; }
-    #cbt-hist-table th:nth-child(3), #cbt-hist-table td:nth-child(3) { width: 15%; }
-    #cbt-hist-table th:nth-child(4), #cbt-hist-table td:nth-child(4) { width: 17%; }
-    #cbt-hist-table th:nth-child(5), #cbt-hist-table td:nth-child(5) { width: 19%; }
-
-    #cbt-weekly-table th:first-child, #cbt-weekly-table td:first-child { width: 30%; }
-    #cbt-table thead tr, #cbt-hist-table thead tr,
-    #cbt-weekly-table thead tr, #cbt-names-table thead tr {
-      border-bottom: 2px solid var(--cb-border);
-      background: #f8fafc; position: sticky; top: 0; z-index: 1;
-    }
-    #cbt-table th, #cbt-hist-table th, #cbt-weekly-table th, #cbt-names-table th {
-      color: var(--cb-text2); font-weight: 700; font-size: 10px;
-      text-transform: uppercase; letter-spacing: 0.1em;
-      padding: 8px 10px; text-align: left;
-      background: #f8fafc;
-    }
-    #cbt-table th:not(:first-child), #cbt-hist-table th:not(:first-child),
-    #cbt-weekly-table th:not(:first-child) { text-align: center; }
-
-    #cbt-table td, #cbt-hist-table td, #cbt-weekly-table td, #cbt-names-table td {
-      padding: 9px 10px; border-bottom: 1px solid var(--cb-border);
-      vertical-align: middle; text-align: center;
-      font-size: 14px; color: var(--cb-text);
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-      transition: background 0.1s;
-    }
-    #cbt-table td:first-child, #cbt-hist-table td:first-child,
-    #cbt-weekly-table td:first-child, #cbt-names-table td:first-child { text-align: left; }
-    #cbt-table tbody tr:last-child td, #cbt-hist-table tbody tr:last-child td,
-    #cbt-weekly-table tbody tr:last-child td, #cbt-names-table tbody tr:last-child td { border-bottom: none; }
-    #cbt-table tbody tr:nth-child(even) td,
-    #cbt-hist-table tbody tr:nth-child(even) td,
-    #cbt-weekly-table tbody tr:nth-child(even) td,
-    #cbt-names-table tbody tr:nth-child(even) td { background: var(--cb-row-alt); }
-    #cbt-table tbody tr:hover td, #cbt-hist-table tbody tr:hover td,
-    #cbt-weekly-table tbody tr:hover td, #cbt-names-table tbody tr:hover td {
-      background: #edf2fb !important;
-    }
-
-    /* ── Data cells ── */
-    .cbt-name-cell {
-      font-size: 13px; font-weight: 700; color: var(--cb-text); cursor: pointer;
-      transition: color 0.15s;
-    }
-    .cbt-name-cell:hover { color: var(--cb-blue); }
-    .cbt-assoc {
-      /* Locked metrics: a LOW row's name must render identically to every
-         other name. Without a fixed line-height the inline LOW badge
-         changes the row's line box and the name shifts size/position. */
-      font-size: 14px !important; font-weight: 700 !important;
-      letter-spacing: normal !important; line-height: 1.3 !important;
-      font-family: var(--cb-sans) !important;
-      color: var(--cb-text); cursor: pointer;
-      display: inline-block; vertical-align: middle;
-      transition: color 0.15s;
-    }
-    .cbt-assoc:hover { color: var(--cb-blue); }
+    #cbt-stat-delta.extra { display: inline-block; color: #3fb950; }
     .cbt-ref { display: block; font-size: 10px; color: var(--cb-text3); font-family: var(--cb-mono); margin-top: 1px; }
-    .cbt-elapsed {
-      font-family: var(--cb-mono); font-size: 14px; font-weight: 700;
-      font-variant-numeric: tabular-nums; color: var(--cb-green);
-      background: rgba(0,200,83,0.08); border-radius: 4px;
-
-      /* ONE identical geometry for green / yellow / red.
-         Color is the only thing that changes between states. */
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      width: 58px !important;
-      min-width: 58px !important;
-      max-width: 58px !important;
-      height: 22px !important;
-      min-height: 22px !important;
-      max-height: 22px !important;
-      padding: 0 !important;
-      margin: 0 auto !important;
-      text-align: center !important;
-      line-height: 22px !important;
-      box-sizing: border-box !important;
-      position: static !important;
-      transform: none !important;
-    }
-    .cbt-elapsed.warn { color: var(--cb-amber); background: rgba(255,171,0,0.1); }
-    .cbt-elapsed.alert { color: var(--cb-red); background: rgba(255,61,61,0.1); }
-    .cbt-rate {
-      font-family: var(--cb-mono); font-size: 15px; font-weight: 800;
-      font-variant-numeric: tabular-nums; color: var(--cb-green);
-      display: inline-block;
-    }
-    .cbt-rate.warn { color: var(--cb-amber); }
-    .cbt-rate.alert { color: var(--cb-red); }
-    .cbt-rate.pending { color: var(--cb-text3); font-style: italic; font-weight: 400; font-size: 13px; }
-    .cbt-hist-rate {
-      font-family: var(--cb-mono); font-size: 15px; font-weight: 800;
-      font-variant-numeric: tabular-nums;
-      /* Fixed badge geometry: every green/amber/red rate uses the exact same
-         box, and flex centering keeps the digits optically centered at every
-         dashboard zoom level. */
-      width: 38px; min-width: 38px; height: 24px;
-      padding: 0 !important; border-radius: 4px;
-      display: inline-flex !important;
-      align-items: center; justify-content: center;
-      line-height: 1 !important; text-align: center;
-      box-sizing: border-box; vertical-align: middle;
-    }
-    .cbt-hist-rate.good  { color: #0a6e2e; background: rgba(0,200,83,0.1); }
-    .cbt-hist-rate.warn  { color: #7a4f00; background: rgba(255,171,0,0.12); }
-    .cbt-hist-rate.alert { color: #8b0000; background: rgba(255,61,61,0.1); }
-
-    /* All three rate states use ONE identical centering rule.  The alert/red
-       state intentionally has no special padding, transform, line-height or
-       positioning; only its color/background differ from green and amber. */
-    #cbt-panel .cbt-hist-rate.good,
-    #cbt-panel .cbt-hist-rate.warn,
-    #cbt-panel .cbt-hist-rate.alert {
-      width: 38px !important;
-      min-width: 38px !important;
-      height: 24px !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      text-align: center !important;
-      line-height: 1 !important;
-      box-sizing: border-box !important;
-      vertical-align: middle !important;
-      transform: none !important;
-      position: static !important;
-    }
-    .cbt-hist-meta { font-size: 14px; font-weight: 600; color: var(--cb-text); font-variant-numeric: tabular-nums; }
-
-    /* ── Rank badges ── */
-    .cbt-rank {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 20px; height: 20px; border-radius: 50%;
-      font-size: 10px; font-weight: 800; margin-right: 6px;
-      background: #e8ecf0; color: var(--cb-text2);
-    }
-    .cbt-rank.gold   { background: linear-gradient(135deg,#f6d365,#d4a017); color: #5a3800; }
-    .cbt-rank.silver { background: linear-gradient(135deg,#d0d8e0,#9aabb8); color: #2a3540; }
-    .cbt-rank.bronze { background: linear-gradient(135deg,#e8b97a,#b87333); color: #4a2000; }
-
-    /* ── Slow batcher alert ── */
-    .cbt-slow-alert {
-      /* Compact badge directly beside the associate name. The Live row itself
-         stays fixed-height, so this never makes a red row taller than others. */
-      width: 52px; height: 16px; padding: 0 !important; margin: 0 !important;
-      display: inline-flex; align-items: center; justify-content: center;
-      box-sizing: border-box; flex: 0 0 52px; overflow: hidden;
-      background: var(--cb-red); color: #fff;
-      font-size: 9px; font-weight: 800; line-height: 1 !important;
-      border-radius: 6px; vertical-align: middle;
-      letter-spacing: 0.04em; text-transform: uppercase;
-      box-shadow: 0 0 8px rgba(255,61,61,0.45);
-      animation: cbt-slow-pulse 1.2s infinite;
-    }
-    @keyframes cbt-slow-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
-
-    /* ── Summary bars (Today / Weekly) ── */
-    #cbt-weekly-summary, #cbt-hist-summary {
-      display: flex; justify-content: space-around;
-      padding: 10px 6px 12px;
-      border-bottom: 1px solid var(--cb-border);
-      background: linear-gradient(180deg, #f8fafc 0%, var(--cb-surface) 100%);
-    }
+    @keyframes cbt-slow-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; } }
     .cbt-ws-stat { text-align: center; }
     .cbt-ws-val {
       font-family: var(--cb-mono); font-size: 20px; font-weight: 900;
@@ -395,14 +189,7 @@
       font-size: 9px; color: var(--cb-text3); text-transform: uppercase;
       letter-spacing: 0.12em; font-weight: 700;
     }
-
-    /* ── Search bars ── */
-    #cbt-weekly-search, #cbt-hist-search, #cbt-live-search {
-      padding: 8px 8px 4px; background: #f8fafc;
-      border-bottom: 1px solid var(--cb-border);
-      display: flex; align-items: center; gap: 6px;
-    }
-    #cbt-search-input, #cbt-hist-search-input, #cbt-live-search-input {
+    #cbt-search-input {
       flex: 1; padding: 7px 12px 7px 32px; background-color: var(--cb-surface);
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238896a8' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
       background-repeat: no-repeat; background-position: 11px center;
@@ -411,99 +198,10 @@
       font-family: var(--cb-sans);
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    #cbt-search-input:focus, #cbt-hist-search-input:focus,
-    #cbt-live-search-input:focus {
+    #cbt-search-input:focus {
       border-color: var(--cb-blue);
       box-shadow: 0 0 0 3px rgba(41,121,255,0.14);
     }
-    #cbt-live-search-clear, #cbt-hist-search-clear, #cbt-weekly-search-clear {
-      font-size: 13px; border: none; background: none;
-      cursor: pointer; color: var(--cb-text3);
-      width: 24px; height: 24px; padding: 0; border-radius: 50%;
-      display: inline-flex; align-items: center; justify-content: center;
-      transition: color 0.15s, background 0.15s;
-    }
-    #cbt-live-search-clear:hover, #cbt-hist-search-clear:hover,
-    #cbt-weekly-search-clear:hover { color: var(--cb-red); background: rgba(255,61,61,0.1); }
-
-    #cbt-live-results { margin-top: 0; }
-    #cbt-hof-search,
-    #cbt-names-search {
-      padding: 8px 8px 4px; background: #f8fafc;
-      border-bottom: 1px solid var(--cb-border);
-      display: flex; align-items: center; gap: 6px;
-    }
-    #cbt-hof-search-input,
-    #cbt-names-search-input {
-      flex: 1; padding: 7px 12px 7px 32px; background-color: var(--cb-surface);
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238896a8' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
-      background-repeat: no-repeat; background-position: 11px center;
-      border: 1.5px solid var(--cb-border); border-radius: 8px;
-      color: var(--cb-text); font-size: 13px; outline: none;
-      font-family: var(--cb-sans);
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-    #cbt-hof-search-input:focus,
-    #cbt-names-search-input:focus {
-      border-color: var(--cb-blue);
-      box-shadow: 0 0 0 3px rgba(41,121,255,0.14);
-    }
-    #cbt-hof-search-clear,
-    #cbt-names-search-clear {
-      font-size: 13px; border: none; background: none;
-      cursor: pointer; color: var(--cb-text3);
-      width: 24px; height: 24px; padding: 0; border-radius: 50%;
-      display: inline-flex; align-items: center; justify-content: center;
-      transition: color 0.15s, background 0.15s;
-    }
-    #cbt-hof-search-clear:hover,
-    #cbt-names-search-clear:hover { color: var(--cb-red); background: rgba(255,61,61,0.1); }
-
-
-    /* ── One shared associate-name search for every dashboard tab ── */
-    #cbt-unified-search {
-      width: 100%; height: 50px; box-sizing: border-box;
-      padding: 7px 9px; background: #f8fafc;
-      border-bottom: 1px solid var(--cb-border);
-      display: flex; align-items: center;
-    }
-    #cbt-unified-search-box {
-      position: relative; width: 100%; height: 36px;
-      display: flex; align-items: center; box-sizing: border-box;
-    }
-    #cbt-unified-search-input {
-      width: 100%; height: 36px; box-sizing: border-box;
-      padding: 7px 94px 7px 34px;
-      background-color: var(--cb-surface);
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238896a8' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
-      background-repeat: no-repeat; background-position: 11px center;
-      border: 1.5px solid var(--cb-border); border-radius: 8px;
-      color: var(--cb-text); font-size: 13px; outline: none;
-      font-family: var(--cb-sans);
-      transition: border-color .15s, box-shadow .15s;
-    }
-    #cbt-unified-search-input:focus {
-      border-color: var(--cb-blue);
-      box-shadow: 0 0 0 3px rgba(41,121,255,.14);
-    }
-    #cbt-unified-search-count {
-      position: absolute; right: 35px; top: 50%; transform: translateY(-50%);
-      display: none; max-width: 58px; overflow: hidden; text-overflow: ellipsis;
-      white-space: nowrap; pointer-events: none;
-      color: var(--cb-text3); font-size: 10px; font-weight: 700;
-      font-family: var(--cb-mono); font-variant-numeric: tabular-nums;
-    }
-    #cbt-unified-search-clear {
-      position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
-      width: 25px; height: 25px; padding: 0; border: none; border-radius: 50%;
-      background: transparent; color: var(--cb-text3); cursor: pointer;
-      display: inline-flex; align-items: center; justify-content: center;
-      font-size: 13px; line-height: 1;
-      transition: color .15s, background .15s;
-    }
-    #cbt-unified-search-clear:hover { color: var(--cb-red); background: rgba(255,61,61,.1); }
-
-    /* ── Search result sections ── */
     .cbt-search-result-section {
       font-size: 9px; font-weight: 800; color: var(--cb-text2);
       text-transform: uppercase; letter-spacing: 0.12em;
@@ -511,110 +209,31 @@
       border-bottom: 1px solid var(--cb-border);
       background: linear-gradient(180deg,#f0f4ff,#f8fafc);
     }
-    .cbt-search-row {
-      display: table; width: 100%; padding: 0;
-      border-bottom: 1px solid var(--cb-border);
-      margin: 0; box-sizing: border-box; height: 38px;
-      transition: background 0.1s;
-    }
-    .cbt-search-row:hover { background: #edf2fb; }
-    .cbt-search-row-name {
-      display: table-cell; width: 35%; font-size: 13px; font-weight: 700;
-      color: var(--cb-text); text-align: left; vertical-align: middle;
-      padding: 5px 4px 5px 12px; overflow: hidden; text-overflow: ellipsis;
-      white-space: nowrap; cursor: pointer; transition: color 0.15s;
-    }
-    .cbt-search-row-name:hover { color: var(--cb-blue) !important; }
-    .cbt-search-row-mid {
-      display: table-cell; width: 40%; font-size: 12px; color: var(--cb-text3);
-      text-align: center; vertical-align: middle; padding: 5px 4px;
-      font-family: var(--cb-mono); font-variant-numeric: tabular-nums; white-space: nowrap;
-    }
-    .cbt-search-row-rate {
-      display: table-cell; width: 25%; font-size: 14px; font-weight: 800;
-      text-align: right; vertical-align: middle;
-      padding: 5px 12px 5px 4px; font-family: var(--cb-mono);
-    }
-    .cbt-search-row .cbt-hist-rate {
-      font-size: 14px !important;
-      display: inline-flex !important;
-      align-items: center; justify-content: center;
-      width: 38px; min-width: 38px; height: 24px;
-      padding: 0 !important; line-height: 1 !important;
-      text-align: center;
-    }
-
-    /* ── Sort headers ── */
     .cbt-sortable, .cbt-sortable-live, .cbt-sortable-hist {
       cursor: pointer; user-select: none; transition: color 0.15s;
     }
-    .cbt-sortable:hover, .cbt-sortable-live:hover,
-    .cbt-sortable-hist:hover { color: var(--cb-blue); }
-
-    /* ── Empty / updated states ── */
-    #cbt-empty, #cbt-hist-empty, #cbt-weekly-empty {
-      display: none; text-align: center; color: var(--cb-text3);
-      padding: 9px 0; font-style: italic; font-size: 13px; line-height: 1.2;
-    }
-    #cbt-updated { text-align: right; color: var(--cb-text3); font-size: 10px; padding: 4px 10px 6px; }
-
-    /* ── Resize handle ── */
-    #cbt-drag-bottom {
-      width: 100%; height: 9px;
-      background-color: #e6ecf3;
-      background-image: radial-gradient(circle, #9fb2c6 1.1px, transparent 1.3px);
-      background-size: 9px 9px; background-position: center; background-repeat: repeat-x;
-      cursor: ns-resize; border-radius: 0 0 var(--cb-radius) var(--cb-radius);
-      transition: background-color 0.2s; user-select: none;
-    }
-    #cbt-drag-bottom:hover { background-color: var(--cb-blue); }
-
-    /* ── Font size controls ── */
+    .cbt-sortable:hover, .cbt-sortable-live:hover, .cbt-sortable-hist:hover { color: var(--cb-blue); }
     #cbt-font-dec, #cbt-font-inc { font-size: 12px !important; }
-
-    /* ══════════════════════════════════════
-       HEADER — pure white in both themes
-    ══════════════════════════════════════ */
     #cbt-header { background: #FFFFFF !important; }
     #cbt-panel.dark #cbt-header {
       background: #FFFFFF !important;
       border-bottom: 1px solid #d9e0e8 !important;
     }
-    /* header contents stay dark-on-white whichever theme is active */
     #cbt-panel.dark #cbt-title { color: var(--cb-navy) !important; }
     #cbt-panel.dark #cbt-title::before { background: var(--cb-blue) !important; }
     #cbt-panel.dark #cbt-controls > span { color: var(--cb-text2) !important; border-color: #dbe2ea !important; }
     #cbt-panel.dark #cbt-controls > span:hover {
       background: var(--cb-blue) !important; color: #fff !important; border-color: var(--cb-blue) !important;
     }
-
-    /* ══════════════════════════════════════
-       FORCE ASSIGN BUTTON
-    ══════════════════════════════════════ */
-    /* ══════════════════════════════════════
-       SCRIPT UI IS NOT SELECTABLE
-       Stops dashboard text becoming a QR code, and stops stray highlights
-       while clicking around. Editable fields are exempt below so typing,
-       caret movement and text editing all behave normally.
-    ══════════════════════════════════════ */
-    #cbt-panel, #cbt-tp, #cbt-qr-overlay, #cbt-afa-overlay, #cbt-ac-drop {
+    #cbt-panel, #cbt-qr-overlay, #cbt-afa-overlay, #cbt-ac-drop {
       -webkit-user-select: none; -moz-user-select: none; -ms-user-select: none; user-select: none;
     }
-    #cbt-panel input, #cbt-panel textarea,
-    #cbt-tp input, #cbt-tp textarea,
-    #cbt-qr-overlay input, #cbt-qr-overlay textarea,
-    #cbt-afa-overlay input, #cbt-afa-overlay textarea,
-    #cbt-ac-drop input {
+    #cbt-panel input, #cbt-panel textarea, #cbt-qr-overlay input, #cbt-qr-overlay textarea, #cbt-afa-overlay input, #cbt-afa-overlay textarea, #cbt-ac-drop input {
       -webkit-user-select: text !important; -moz-user-select: text !important;
       -ms-user-select: text !important; user-select: text !important;
     }
-
-    /* ══════════════════════════════════════
-       FORCE ASSIGN BUTTON — white label in every state
-    ══════════════════════════════════════ */
     #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn {
-      /* identical metrics to the A− / % / A+ / theme controls beside it:
-         same font size, same vertical padding, same radius, same border */
+
       display: inline-flex !important; align-items: center; justify-content: center;
       font-size: 13px !important; line-height: 1.35 !important;
       padding: 3px 9px !important; border-radius: 5px !important;
@@ -637,43 +256,20 @@
       background: linear-gradient(180deg, #2569d8 0%, #1c58bd 100%) !important;
       box-shadow: 0 1px 2px rgba(13,27,42,.2);
     }
-    /* running: deep amber so white stays legible on it */
-    #cbt-afa-btn.busy, #cbt-panel.dark #cbt-afa-btn.busy,
-    #cbt-afa-btn.busy:hover, #cbt-panel.dark #cbt-afa-btn.busy:hover {
+    #cbt-afa-btn.busy, #cbt-panel.dark #cbt-afa-btn.busy, #cbt-afa-btn.busy:hover, #cbt-panel.dark #cbt-afa-btn.busy:hover {
       background: linear-gradient(180deg, #c8790a 0%, #a35c00 100%) !important;
       border-color: #8a4e00 !important; color: #FFFFFF !important;
     }
-    /* finished cleanly */
     #cbt-afa-btn.ok, #cbt-panel.dark #cbt-afa-btn.ok {
       background: linear-gradient(180deg, #1f8f4a 0%, #16713a 100%) !important;
       border-color: #115c2f !important; color: #FFFFFF !important;
     }
-    /* unavailable */
     #cbt-afa-btn.off, #cbt-panel.dark #cbt-afa-btn.off {
       background: linear-gradient(180deg, #8a97a6 0%, #6f7d8c 100%) !important;
       border-color: #5d6a78 !important; color: #FFFFFF !important;
       cursor: default; box-shadow: none; transform: none;
     }
-    /* Nothing may fade or darken this label: covers every state, every
-       descendant, inherited fills, opacity and text-shadow. */
-    #cbt-afa-btn,
-    #cbt-afa-btn *,
-    #cbt-afa-btn:hover, #cbt-afa-btn:hover *,
-    #cbt-afa-btn:active, #cbt-afa-btn:active *,
-    #cbt-afa-btn:focus, #cbt-afa-btn:focus *,
-    #cbt-afa-btn:focus-visible, #cbt-afa-btn:focus-visible *,
-    #cbt-afa-btn:focus-within, #cbt-afa-btn:focus-within *,
-    #cbt-afa-btn.busy, #cbt-afa-btn.busy *,
-    #cbt-afa-btn.ok,   #cbt-afa-btn.ok *,
-    #cbt-afa-btn.off,  #cbt-afa-btn.off *,
-    #cbt-afa-btn[disabled], #cbt-afa-btn[disabled] *,
-    #cbt-panel.dark #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn *,
-    #cbt-panel.dark #cbt-afa-btn:hover, #cbt-panel.dark #cbt-afa-btn:hover *,
-    #cbt-panel.dark #cbt-afa-btn:active, #cbt-panel.dark #cbt-afa-btn:active *,
-    #cbt-panel.dark #cbt-afa-btn:focus, #cbt-panel.dark #cbt-afa-btn:focus *,
-    #cbt-panel.dark #cbt-afa-btn.busy, #cbt-panel.dark #cbt-afa-btn.busy *,
-    #cbt-panel.dark #cbt-afa-btn.ok,   #cbt-panel.dark #cbt-afa-btn.ok *,
-    #cbt-panel.dark #cbt-afa-btn.off,  #cbt-panel.dark #cbt-afa-btn.off * {
+    #cbt-afa-btn, #cbt-afa-btn *, #cbt-afa-btn:hover, #cbt-afa-btn:hover *, #cbt-afa-btn:active, #cbt-afa-btn:active *, #cbt-afa-btn:focus, #cbt-afa-btn:focus *, #cbt-afa-btn:focus-visible, #cbt-afa-btn:focus-visible *, #cbt-afa-btn:focus-within, #cbt-afa-btn:focus-within *, #cbt-afa-btn.busy, #cbt-afa-btn.busy *, #cbt-afa-btn.ok, #cbt-afa-btn.ok *, #cbt-afa-btn.off, #cbt-afa-btn.off *, #cbt-afa-btn[disabled], #cbt-afa-btn[disabled] *, #cbt-panel.dark #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn *, #cbt-panel.dark #cbt-afa-btn:hover, #cbt-panel.dark #cbt-afa-btn:hover *, #cbt-panel.dark #cbt-afa-btn:active, #cbt-panel.dark #cbt-afa-btn:active *, #cbt-panel.dark #cbt-afa-btn:focus, #cbt-panel.dark #cbt-afa-btn:focus *, #cbt-panel.dark #cbt-afa-btn.busy, #cbt-panel.dark #cbt-afa-btn.busy *, #cbt-panel.dark #cbt-afa-btn.ok, #cbt-panel.dark #cbt-afa-btn.ok *, #cbt-panel.dark #cbt-afa-btn.off, #cbt-panel.dark #cbt-afa-btn.off * {
       color: #FFFFFF !important;
       -webkit-text-fill-color: #FFFFFF !important;
       opacity: 1 !important;
@@ -682,10 +278,6 @@
     }
     #cbt-afa-btn:focus-visible { outline: 2px solid #FFFFFF; outline-offset: 2px; }
     #cbt-afa-btn .cbt-afa-lbl { line-height: 1; }
-
-    /* ══════════════════════════════════════
-       NIGHT MODE — Force Assign popup
-    ══════════════════════════════════════ */
     #cbt-afa-overlay.cbt-dark #cbt-afa-card {
       background: #0d1117; box-shadow: 0 20px 60px rgba(0,0,0,.6), 0 4px 16px rgba(0,0,0,.4);
     }
@@ -728,8 +320,7 @@
       background: #161b22;
       border-color: #30363d;
     }
-    #cbt-afa-overlay.cbt-dark .cbt-missing-qr-kind,
-    #cbt-afa-overlay.cbt-dark .cbt-missing-qr-summary { color: #8b99aa; }
+    #cbt-afa-overlay.cbt-dark .cbt-missing-qr-kind, #cbt-afa-overlay.cbt-dark .cbt-missing-qr-summary { color: #8b99aa; }
     #cbt-afa-overlay.cbt-dark .cbt-missing-qr-value {
       background: #0d1117;
       color: #e6edf3;
@@ -751,10 +342,6 @@
     #cbt-afa-overlay.cbt-dark .cbt-afa-opt:hover { background: #1c2333; border-color: #58a6ff; }
     #cbt-afa-overlay.cbt-dark .cbt-afa-opt.off:hover { background: #161b22; border-color: #30363d; }
     #cbt-afa-overlay.cbt-dark .cbt-afa-note { color: #8b99aa; }
-
-    /* ══════════════════════════════════════
-       NIGHT MODE — Search by Name dropdown
-    ══════════════════════════════════════ */
     #cbt-ac-drop.cbt-dark {
       background: #0d1117; border-color: #21262d;
       box-shadow: 0 12px 36px rgba(0,0,0,.55), 0 2px 8px rgba(0,0,0,.4);
@@ -766,8 +353,7 @@
       border-bottom-color: #21262d; color: #8faac0;
     }
     #cbt-ac-drop.cbt-dark .cbt-ac-item { border-bottom-color: #21262d; }
-    #cbt-ac-drop.cbt-dark .cbt-ac-item:hover,
-    #cbt-ac-drop.cbt-dark .cbt-ac-item.on { background: #1c2333; box-shadow: inset 3px 0 0 #58a6ff; }
+    #cbt-ac-drop.cbt-dark .cbt-ac-item:hover, #cbt-ac-drop.cbt-dark .cbt-ac-item.on { background: #1c2333; box-shadow: inset 3px 0 0 #58a6ff; }
     #cbt-ac-drop.cbt-dark .cbt-ac-nm { color: #c9d1d9; }
     #cbt-ac-drop.cbt-dark .cbt-ac-nm mark { background: rgba(88,166,255,.22); color: #58a6ff; }
     #cbt-ac-drop.cbt-dark .cbt-ac-tag { color: #6e7b8d; }
@@ -775,25 +361,16 @@
     #cbt-ac-drop.cbt-dark .cbt-ac-foot {
       background: #161b22; border-top-color: #21262d; color: #6e7b8d;
     }
-
-    /* QR popup stays plain white in both themes — never themed, never scaled */
     #cbt-qr-card { background: #FFFFFF !important; }
     #cbt-scale-reset {
       font-size: 11px !important; font-variant-numeric: tabular-nums;
       min-width: 40px; text-align: center;
     }
-
-    /* Scaling safeguards: at larger sizes long values must wrap inside their
-       box rather than push a panel out of shape. */
     #cbt-qr-card, #cbt-afa-card { max-width: 92vw; }
     #cbt-qr-input { word-break: break-all; }
-    .cbt-afa-msg  { word-break: break-word; }
-    .cbt-afa-ref  { word-break: break-all; }
+    .cbt-afa-msg { word-break: break-word; }
+    .cbt-afa-ref { word-break: break-all; }
     #cbt-afa-lead { word-break: break-word; }
-
-    /* ══════════════════════════════════════
-       DARK MODE — Batcher Timer
-    ══════════════════════════════════════ */
     #cbt-panel.dark {
       background: #0d1117 !important; border-color: #21262d !important;
       box-shadow: 0 4px 24px rgba(0,0,0,0.5) !important;
@@ -811,286 +388,34 @@
     #cbt-panel.dark .cbt-stat-label { color: #c8d8ea !important; }
     #cbt-panel.dark .cbt-stat-value { color: #ffffff !important; text-shadow: 0 1px 4px rgba(0,0,0,0.4) !important; }
     #cbt-panel.dark #cbt-stat-dot { box-shadow: 0 0 0 3px rgba(255,255,255,0.08) !important; }
-    #cbt-panel.dark #cbt-tabs { background: #0d1117 !important; border-bottom-color: #21262d !important; }
-    #cbt-panel.dark .cbt-tab { color: #8b99aa !important; }
-    #cbt-panel.dark .cbt-tab:hover { color: #c9d1d9 !important; }
-    #cbt-panel.dark .cbt-tab.active { color: #58a6ff !important; border-bottom-color: #58a6ff !important; }
-    #cbt-panel.dark #cbt-body { background: #0d1117 !important; scrollbar-color: #21262d transparent !important; }
-    #cbt-panel.dark #cbt-table thead tr, #cbt-panel.dark #cbt-hist-table thead tr,
-    #cbt-panel.dark #cbt-weekly-table thead tr, #cbt-panel.dark #cbt-names-table thead tr {
-      background: #161b22 !important; border-bottom-color: #21262d !important;
-    }
-    #cbt-panel.dark #cbt-table th, #cbt-panel.dark #cbt-hist-table th,
-    #cbt-panel.dark #cbt-weekly-table th, #cbt-panel.dark #cbt-names-table th {
-      background: #161b22 !important; color: #8faac0 !important;
-    }
-    #cbt-panel.dark #cbt-table td, #cbt-panel.dark #cbt-hist-table td,
-    #cbt-panel.dark #cbt-weekly-table td, #cbt-panel.dark #cbt-names-table td {
-      color: #c9d1d9 !important; border-bottom-color: #21262d !important;
-    }
-    #cbt-panel.dark #cbt-table tbody tr:nth-child(even) td,
-    #cbt-panel.dark #cbt-hist-table tbody tr:nth-child(even) td,
-    #cbt-panel.dark #cbt-weekly-table tbody tr:nth-child(even) td,
-    #cbt-panel.dark #cbt-names-table tbody tr:nth-child(even) td { background: #161b22 !important; }
-    #cbt-panel.dark #cbt-table tbody tr:hover td, #cbt-panel.dark #cbt-hist-table tbody tr:hover td,
-    #cbt-panel.dark #cbt-weekly-table tbody tr:hover td, #cbt-panel.dark #cbt-names-table tbody tr:hover td { background: #1c2333 !important; }
-    #cbt-panel.dark .cbt-assoc { color: #c9d1d9 !important; }
-    #cbt-panel.dark .cbt-assoc:hover { color: #58a6ff !important; }
-    #cbt-panel.dark .cbt-name-cell { color: #c9d1d9 !important; }
-    #cbt-panel.dark .cbt-name-cell:hover { color: #58a6ff !important; }
-    #cbt-panel.dark .cbt-hist-meta { color: #c9d1d9 !important; }
-    #cbt-panel.dark .cbt-elapsed { background: rgba(0,200,83,0.07) !important; }
-    #cbt-panel.dark .cbt-elapsed.warn { background: rgba(255,171,0,0.07) !important; }
-    #cbt-panel.dark .cbt-elapsed.alert { background: rgba(255,61,61,0.07) !important; }
-    #cbt-panel.dark .cbt-hist-rate.good  { background: rgba(0,200,83,0.07) !important; color: #3fb950 !important; }
-    #cbt-panel.dark .cbt-hist-rate.warn  { background: rgba(255,171,0,0.07) !important; color: #e3b341 !important; }
-    #cbt-panel.dark .cbt-hist-rate.alert { background: rgba(255,61,61,0.07) !important; color: #f85149 !important; }
     #cbt-panel.dark .cbt-ws-val { color: #e6edf3 !important; }
     #cbt-panel.dark .cbt-ws-label { color: #8faac0 !important; }
-    #cbt-panel.dark #cbt-weekly-summary, #cbt-panel.dark #cbt-hist-summary {
-      background: linear-gradient(180deg,#161b22,#0d1117) !important;
-      border-bottom-color: #21262d !important;
-    }
-    #cbt-panel.dark #cbt-weekly-search, #cbt-panel.dark #cbt-hist-search,
-    #cbt-panel.dark #cbt-live-search, #cbt-panel.dark #cbt-names-search,
-    #cbt-panel.dark #cbt-hof-search {
-      background: #161b22 !important; border-bottom-color: #21262d !important;
-    }
-    #cbt-panel.dark #cbt-search-input, #cbt-panel.dark #cbt-hist-search-input,
-    #cbt-panel.dark #cbt-live-search-input, #cbt-panel.dark #cbt-names-search-input,
-    #cbt-panel.dark #cbt-hof-search-input {
+    #cbt-panel.dark #cbt-search-input {
       background-color: #0d1117 !important; border-color: #21262d !important; color: #c9d1d9 !important;
       background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236e7b8d' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") !important;
     }
-    #cbt-panel.dark #cbt-search-input:focus, #cbt-panel.dark #cbt-hist-search-input:focus,
-    #cbt-panel.dark #cbt-live-search-input:focus, #cbt-panel.dark #cbt-names-search-input:focus,
-    #cbt-panel.dark #cbt-hof-search-input:focus {
+    #cbt-panel.dark #cbt-search-input:focus {
       border-color: #58a6ff !important;
       box-shadow: 0 0 0 3px rgba(88,166,255,0.14) !important;
     }
-    #cbt-panel.dark #cbt-unified-search { background: #161b22 !important; border-bottom-color: #21262d !important; }
-    #cbt-panel.dark #cbt-unified-search-input {
-      background-color: #0d1117 !important; color: #c9d1d9 !important; border-color: #30363d !important;
-    }
-    #cbt-panel.dark #cbt-unified-search-input:focus {
-      border-color: #58a6ff !important; box-shadow: 0 0 0 3px rgba(88,166,255,.14) !important;
-    }
-    #cbt-panel.dark #cbt-unified-search-count,
-    #cbt-panel.dark #cbt-unified-search-clear { color: #7a8fa3 !important; }
-    #cbt-panel.dark #cbt-unified-search-clear:hover { color: #f85149 !important; background: rgba(248,81,73,.1) !important; }
     #cbt-panel.dark .cbt-search-result-section {
       background: linear-gradient(180deg,#1a2233,#161b22) !important;
       border-top-color: #58a6ff !important; border-bottom-color: #21262d !important; color: #8faac0 !important;
     }
-    #cbt-panel.dark .cbt-search-row { border-bottom-color: #21262d !important; }
-    #cbt-panel.dark .cbt-search-row:hover { background: #1c2333 !important; }
-    #cbt-panel.dark .cbt-search-row-name { color: #c9d1d9 !important; }
-    #cbt-panel.dark .cbt-search-row-name:hover { color: #58a6ff !important; }
-    #cbt-panel.dark .cbt-search-row-mid { color: #7a8fa3 !important; }
-    #cbt-panel.dark #cbt-updated { color: #3a4456 !important; }
-    #cbt-panel.dark #cbt-drag-bottom { background-color: #21262d !important; }
-    #cbt-panel.dark #cbt-drag-bottom:hover { background-color: #58a6ff !important; }
+    .cbt-search-result-section { }
 
-    /* ══════════════════════════════════════
-       ASSOCIATE SEARCH PANEL (task page)
-    ══════════════════════════════════════ */
-    #cbt-tp {
-      position: fixed !important; top: 90px !important; right: 12px !important;
-      width: 420px !important; z-index: 9999 !important;
-      background: var(--cb-surface);
-      border: 1px solid var(--cb-border);
-      border-radius: var(--cb-radius);
-      box-shadow: 0 8px 32px rgba(13,27,42,0.18), 0 2px 8px rgba(13,27,42,0.10);
-      font-family: var(--cb-sans); color: var(--cb-text); overflow: hidden;
-    }
-    #cbt-tp-header {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 14px;
-      background: #f0f4f8;
-      border-bottom: 1px solid var(--cb-border);
-      cursor: move; user-select: none;
-    }
-    #cbt-tp.cbt-tp-dragging { transition: none; }
-    #cbt-tp.cbt-tp-dragging #cbt-tp-header { cursor: grabbing; }
-    #cbt-tp-title {
-      font-weight: 800; font-size: 12px; color: var(--cb-navy);
-      letter-spacing: 0.06em; text-transform: uppercase;
-      display: flex; align-items: center; gap: 6px;
-    }
-    #cbt-tp-title::before {
-      content: ''; display: inline-block; width: 2px; height: 14px;
-      background: var(--cb-blue); border-radius: 2px;
-    }
-    #cbt-tp-controls { display: flex; gap: 8px; align-items: center; }
-    #cbt-tp-font-dec, #cbt-tp-font-inc, #cbt-tp-collapse {
-      font-size: 11px; font-weight: 800; cursor: pointer; user-select: none;
-      color: var(--cb-text2); padding: 2px 6px; border-radius: 4px;
-      border: 1px solid var(--cb-border); transition: all 0.15s;
-    }
-    #cbt-tp-font-dec:hover, #cbt-tp-font-inc:hover, #cbt-tp-collapse:hover {
-      background: var(--cb-blue); color: #fff; border-color: var(--cb-blue);
-    }
-    /* Rolled up: header only, and the panel shrinks to fit it */
-    #cbt-tp.cbt-tp-rolled #cbt-tp-body { display: none; }
-    #cbt-tp-theme {
-      font-size: 14px; cursor: pointer; padding: 2px 5px; border-radius: 4px;
-      transition: all 0.15s;
-    }
-    #cbt-tp-theme:hover { background: var(--cb-border); }
-
-    #cbt-tp-body {
-      height: 220px; min-height: 220px; max-height: 220px;
-      overflow-y: auto; background: var(--cb-surface);
-      scrollbar-width: thin; scrollbar-color: var(--cb-border) transparent;
-    }
-    #cbt-tp-body::-webkit-scrollbar { width: 4px; }
-    #cbt-tp-body::-webkit-scrollbar-thumb { background: var(--cb-border); border-radius: 3px; }
-
-    /* search bar inside tp */
-    #cbt-tp-body > div:first-child {
-      padding: 8px 8px 4px; background: #f8fafc;
-      border-bottom: 1px solid var(--cb-border);
-      display: flex; align-items: center; gap: 6px;
-    }
-    #cbt-tp-search-input {
-      flex: 1; padding: 7px 12px 7px 32px; background-color: var(--cb-surface);
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238896a8' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E");
-      background-repeat: no-repeat; background-position: 11px center;
-      border: 1.5px solid var(--cb-border); border-radius: 8px;
-      color: var(--cb-text); font-size: 13px; outline: none;
-      font-family: var(--cb-sans);
-      transition: border-color 0.15s, box-shadow 0.15s;
-    }
-    #cbt-tp-search-input:focus {
-      border-color: var(--cb-blue);
-      box-shadow: 0 0 0 3px rgba(41,121,255,0.14);
-    }
-    #cbt-tp-search-clear {
-      font-size: 13px; border: none; background: none;
-      cursor: pointer; color: var(--cb-text3);
-      width: 24px; height: 24px; padding: 0; border-radius: 50%;
-      display: inline-flex; align-items: center; justify-content: center;
-      transition: color 0.15s, background 0.15s;
-    }
-    #cbt-tp-search-clear:hover { color: var(--cb-red); background: rgba(255,61,61,0.1); }
-
-    #cbt-tp-results { }
-    .cbt-tp-row {
-      display: table; width: 100%;
-      border-bottom: 1px solid var(--cb-border);
-      height: 38px; margin: 0; box-sizing: border-box;
-      transition: background 0.1s;
-    }
-    .cbt-tp-row:hover { background: #edf2fb; }
-    .cbt-tp-row-name {
-      display: table-cell; width: 55%; font-size: 13px; font-weight: 700;
-      color: var(--cb-text); vertical-align: middle; padding: 3px 4px 3px 12px;
-      cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      transition: color 0.15s;
-    }
-    .cbt-tp-row-name:hover { color: var(--cb-blue) !important; }
-    .cbt-tp-row-mid {
-      display: table-cell; width: 20%; font-size: 11px; color: var(--cb-text3);
-      text-align: center; vertical-align: middle; font-family: var(--cb-mono);
-    }
-    .cbt-tp-row-rate {
-      display: table-cell; width: 25%; font-size: 14px; font-weight: 800;
-      text-align: right; vertical-align: middle; padding: 3px 12px 3px 4px;
-      font-family: var(--cb-mono); font-variant-numeric: tabular-nums;
-    }
-
-    /* section headers in tp results */
-    .cbt-search-result-section { }   /* already defined above */
-
-    /* ── DARK MODE — Associate Search ── */
-    #cbt-tp.dark {
-      background: #0d1117 !important; border-color: #21262d !important;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
-    }
-    #cbt-tp.dark #cbt-tp-header {
-      background: linear-gradient(135deg,#0d1117,#161b22) !important;
-      border-bottom-color: #21262d !important;
-    }
-    #cbt-tp.dark #cbt-tp-title { color: #e6edf3 !important; }
-    #cbt-tp.dark #cbt-tp-title::before { background: #58a6ff !important; }
-    #cbt-tp.dark #cbt-tp-font-dec, #cbt-tp.dark #cbt-tp-font-inc, #cbt-tp.dark #cbt-tp-collapse {
-      color: #6e7b8d !important; border-color: rgba(110,123,141,0.2) !important;
-    }
-    #cbt-tp.dark #cbt-tp-font-dec:hover, #cbt-tp.dark #cbt-tp-font-inc:hover, #cbt-tp.dark #cbt-tp-collapse:hover {
-      background: #58a6ff !important; color: #fff !important; border-color: #58a6ff !important;
-    }
-    #cbt-tp.dark #cbt-tp-body {
-      background: #0d1117 !important; scrollbar-color: #21262d transparent !important;
-    }
-    #cbt-tp.dark #cbt-tp-body > div:first-child {
-      background: #161b22 !important; border-bottom-color: #21262d !important;
-    }
-    #cbt-tp.dark #cbt-tp-search-input {
-      background-color: #0d1117 !important; border-color: #21262d !important; color: #c9d1d9 !important;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%236e7b8d' stroke-width='2.5' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") !important;
-    }
-    #cbt-tp.dark #cbt-tp-search-input:focus {
-      border-color: #58a6ff !important;
-      box-shadow: 0 0 0 3px rgba(88,166,255,0.14) !important;
-    }
-    #cbt-tp.dark .cbt-tp-row { border-bottom-color: #21262d !important; }
-    #cbt-tp.dark .cbt-tp-row:hover { background: #1c2333 !important; }
-    #cbt-tp.dark .cbt-tp-row-name { color: #c9d1d9 !important; }
-    #cbt-tp.dark .cbt-tp-row-name:hover { color: #58a6ff !important; }
-    #cbt-tp.dark .cbt-tp-row-mid { color: #7a8fa3 !important; }
-    #cbt-tp.dark .cbt-search-result-section {
-      background: linear-gradient(180deg,#1a2233,#161b22) !important;
-      border-top-color: #58a6ff !important; border-bottom-color: #21262d !important; color: #8faac0 !important;
-    }
-    #cbt-tp.dark .cbt-search-row { border-bottom-color: #21262d !important; }
-    #cbt-tp.dark .cbt-search-row:hover { background: #1c2333 !important; }
-    #cbt-tp.dark .cbt-search-row-name { color: #c9d1d9 !important; }
-    #cbt-tp.dark .cbt-search-row-name:hover { color: #58a6ff !important; }
-    #cbt-tp.dark .cbt-search-row-mid { color: #7a8fa3 !important; }
-    #cbt-tp.dark .cbt-hist-rate.good  { color: #3fb950 !important; background: rgba(0,200,83,0.07) !important; }
-    #cbt-tp.dark .cbt-hist-rate.warn  { color: #e3b341 !important; background: rgba(255,171,0,0.07) !important; }
-    #cbt-tp.dark .cbt-hist-rate.alert { color: #f85149 !important; background: rgba(255,61,61,0.07) !important; }
-
-    /* ── UI polish (v21.10) ── */
-    @keyframes cbtFadeIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-    #cbt-panel, #cbt-tp { animation: cbtFadeIn 0.28s ease-out; }
-
-    /* row hover: left accent bar, no layout shift */
-    #cbt-table tbody tr:hover td:first-child, #cbt-hist-table tbody tr:hover td:first-child,
-    #cbt-weekly-table tbody tr:hover td:first-child, #cbt-names-table tbody tr:hover td:first-child {
-      box-shadow: inset 3px 0 0 var(--cb-blue);
-    }
-    #cbt-panel.dark #cbt-table tbody tr:hover td:first-child, #cbt-panel.dark #cbt-hist-table tbody tr:hover td:first-child,
-    #cbt-panel.dark #cbt-weekly-table tbody tr:hover td:first-child, #cbt-panel.dark #cbt-names-table tbody tr:hover td:first-child {
-      box-shadow: inset 3px 0 0 #58a6ff;
-    }
-    .cbt-search-row:hover .cbt-search-row-name, .cbt-tp-row:hover .cbt-tp-row-name {
-      box-shadow: inset 3px 0 0 var(--cb-blue);
-    }
-    #cbt-panel.dark .cbt-search-row:hover .cbt-search-row-name,
-    #cbt-tp.dark .cbt-search-row:hover .cbt-search-row-name,
-    #cbt-tp.dark .cbt-tp-row:hover .cbt-tp-row-name {
-      box-shadow: inset 3px 0 0 #58a6ff;
-    }
-
-    /* stat card hover tint */
+    @keyframes cbtFadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to { opacity: 1; transform: none; } }
+    #cbt-panel { animation: cbtFadeIn 0.28s ease-out; }
     .cbt-stat-card { transition: background 0.15s; }
     .cbt-stat-card:hover { background: rgba(41,121,255,0.06); }
     #cbt-panel.dark .cbt-stat-card:hover { background: rgba(88,166,255,0.07) !important; }
-
-    /* live pulse next to the updated timestamp */
-    #cbt-updated::before {
-      content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-      background: var(--cb-green); margin-right: 5px; vertical-align: middle;
-      animation: cbt-live-blink 2s infinite;
-    }
-    @keyframes cbt-live-blink { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
-
-    /* Inline copy confirmation: the clicked name turns green and a
-       small "Copied" tag appears right beside it */
+    @keyframes cbt-live-blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; } }
     .cbt-copied-name, .cbt-copied-name:hover { color: #0a9e43 !important; }
-    #cbt-panel.dark .cbt-copied-name, #cbt-panel.dark .cbt-copied-name:hover,
-    #cbt-tp.dark .cbt-copied-name, #cbt-tp.dark .cbt-copied-name:hover { color: #3fb950 !important; }
+    #cbt-panel.dark .cbt-copied-name, #cbt-panel.dark .cbt-copied-name:hover { color: #3fb950 !important; }
     .cbt-copied-tag {
       display: inline-block; margin-left: 6px; padding: 1px 7px;
       background: #00c853; color: #fff; font-size: 10px; font-weight: 800;
@@ -1098,187 +423,15 @@
       vertical-align: middle; pointer-events: none;
       animation: cbt-tag-in .15s ease-out;
     }
-    @keyframes cbt-tag-in { from { opacity: 0; transform: translateX(-3px); } to { opacity: 1; transform: none; } }
-
-    /* ══════════════════════════════════════
-       UNIFORM ROW GEOMETRY
-       Live, Today, Weekly and Hall of Fame rows all share one fixed height,
-       padding and vertical alignment. A SLOW row carries an extra inline
-       badge, which previously grew the row; with the height fixed and the
-       badge given line-height:1 it can no longer do that. Heights are in px
-       inside the zoomed body, so they scale proportionally at every size.
-    ══════════════════════════════════════ */
-    #cbt-table tbody tr, #cbt-hist-table tbody tr,
-    #cbt-weekly-table tbody tr, #cbt-hof-table tbody tr {
-      height: 48px !important;
-    }
-    #cbt-table tbody td, #cbt-hist-table tbody td,
-    #cbt-weekly-table tbody td, #cbt-hof-table tbody td {
-      height: 48px !important; padding: 0 10px !important;
-      vertical-align: middle !important; line-height: 1.3 !important;
-      box-sizing: border-box; overflow: hidden;
-    }
-    /* A cell's height property is only a MINIMUM — content taller than it
-       still grows the row, which is why the two-line Live cell stayed taller than
-       the single-line Today / Weekly / Fastest cells. Every first cell now
-       wraps its content in this fixed-height box instead, so all four tables
-       resolve to exactly the same row geometry no matter what is inside. */
+    @keyframes cbt-tag-in {
+    from { opacity: 0; transform: translateX(-3px); }
+    to { opacity: 1; transform: none; } }
     .cbt-cw {
       display: flex; flex-direction: column; justify-content: center;
       width: 100%; min-width: 0;
       height: 40px; min-height: 40px; max-height: 40px;
       overflow: hidden; box-sizing: border-box;
     }
-
-    /* ═══════════════════════════════════════════════════════════════
-       LIVE TAB — HARD UNIFORM ROW GEOMETRY
-       ---------------------------------------------------------------
-       A native HTML table row can grow beyond its requested height when
-       content needs more room. That is why SLOW rows could become taller than
-       normal rows even though both requested 48px.
-
-       Live now uses one strict 3-column grid for BOTH its header and every
-       body row. Every body row is exactly 48px high and exactly 100% wide.
-       Badge/color/text content is contained INSIDE that geometry and cannot
-       resize the row.
-    ═══════════════════════════════════════════════════════════════ */
-    #cbt-table {
-      display: block !important;
-      width: 100% !important;
-      max-width: 100% !important;
-      table-layout: fixed !important;
-      border-collapse: collapse !important;
-      box-sizing: border-box !important;
-    }
-    #cbt-table thead,
-    #cbt-table tbody {
-      display: block !important;
-      width: 100% !important;
-      max-width: 100% !important;
-      box-sizing: border-box !important;
-    }
-    #cbt-table thead tr,
-    #cbt-table tbody tr {
-      display: grid !important;
-      grid-template-columns: minmax(0,40%) minmax(0,30%) minmax(0,30%) !important;
-      width: 100% !important;
-      max-width: 100% !important;
-      box-sizing: border-box !important;
-      margin: 0 !important;
-      padding: 0 !important;
-    }
-    #cbt-table tbody tr {
-      height: 48px !important;
-      min-height: 48px !important;
-      max-height: 48px !important;
-      overflow: hidden !important;
-    }
-    #cbt-table thead th,
-    #cbt-table tbody td {
-      width: auto !important;
-      min-width: 0 !important;
-      max-width: none !important;
-      box-sizing: border-box !important;
-      margin: 0 !important;
-    }
-    #cbt-table tbody td {
-      height: 48px !important;
-      min-height: 48px !important;
-      max-height: 48px !important;
-      padding: 0 10px !important;
-      display: flex !important;
-      align-items: center !important;
-      overflow: hidden !important;
-      line-height: 1.3 !important;
-    }
-    #cbt-table tbody td:first-child {
-      justify-content: flex-start !important;
-      text-align: left !important;
-    }
-    #cbt-table tbody td:nth-child(2),
-    #cbt-table tbody td:nth-child(3) {
-      justify-content: center !important;
-      text-align: center !important;
-    }
-    #cbt-table tbody td:nth-child(2) {
-      display: flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      text-align: center !important;
-    }
-    #cbt-table tbody td:nth-child(2) .cbt-elapsed,
-    #cbt-table tbody td:nth-child(2) .cbt-elapsed.warn,
-    #cbt-table tbody td:nth-child(2) .cbt-elapsed.alert {
-      margin-left: auto !important;
-      margin-right: auto !important;
-      transform: none !important;
-      left: auto !important;
-      right: auto !important;
-    }
-    #cbt-table .cbt-cw {
-      width: 100% !important;
-      height: 40px !important;
-      min-height: 40px !important;
-      max-height: 40px !important;
-      overflow: hidden !important;
-      box-sizing: border-box !important;
-      flex: 0 1 auto !important;
-    }
-    #cbt-table .cbt-cw-top {
-      width: 100% !important;
-      height: 18px !important;
-      min-height: 18px !important;
-      max-height: 18px !important;
-      overflow: hidden !important;
-      box-sizing: border-box !important;
-    }
-    #cbt-table .cbt-live-status-slot {
-      height: 16px !important;
-      min-height: 16px !important;
-      max-height: 16px !important;
-      overflow: hidden !important;
-      flex: 0 0 auto !important;
-    }
-    #cbt-table .cbt-slow-alert {
-      height: 16px !important;
-      min-height: 16px !important;
-      max-height: 16px !important;
-      line-height: 16px !important;
-      padding: 0 !important;
-      margin: 0 !important;
-      box-sizing: border-box !important;
-      transform: none !important;
-      position: static !important;
-    }
-    #cbt-table .cbt-assoc,
-    #cbt-table .cbt-ref,
-    #cbt-table .cbt-rate {
-      max-height: 18px !important;
-      box-sizing: border-box !important;
-    }
-    #cbt-table .cbt-elapsed {
-      width: 58px !important;
-      min-width: 58px !important;
-      max-width: 58px !important;
-      height: 22px !important;
-      min-height: 22px !important;
-      max-height: 22px !important;
-      margin-left: auto !important;
-      margin-right: auto !important;
-      display: inline-flex !important;
-      align-items: center !important;
-      justify-content: center !important;
-      text-align: center !important;
-      padding: 0 !important;
-      line-height: 22px !important;
-      box-sizing: border-box !important;
-      transform: none !important;
-    }
-
-    /* Live first-column geometry is identical for every rate state.
-       The SLOW badge sits immediately beside the associate name, but the
-       fixed-height wrapper keeps red/yellow/green rows exactly the same size.
-       Rows without a badge do not reserve a fake empty status column. */
     .cbt-cw-top {
       display: flex;
       align-items: center;
@@ -1290,10 +443,6 @@
       box-sizing: border-box;
       overflow: hidden;
     }
-    .cbt-cw-top .cbt-assoc {
-      flex: 0 1 auto;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
-    }
     .cbt-live-status-slot {
       flex: 0 0 auto;
       height: 18px;
@@ -1301,144 +450,9 @@
       overflow: visible; box-sizing: border-box;
     }
     .cbt-cw .cbt-ref { display: block; margin-top: 1px !important; }
-    /* consistent type sizing for every value in a row */
-    #cbt-table tbody td .cbt-assoc, #cbt-hist-table tbody td .cbt-assoc,
-    #cbt-weekly-table tbody td .cbt-assoc, #cbt-hof-table tbody td .cbt-assoc {
-      font-size: 14px !important; font-weight: 700 !important; line-height: 1.3 !important;
-    }
-    #cbt-table tbody td .cbt-ref, #cbt-hof-table tbody td .cbt-ref {
-      font-size: 10px !important; line-height: 1.2 !important; margin-top: 0 !important;
-    }
-    #cbt-table tbody td .cbt-elapsed, #cbt-table tbody td .cbt-rate,
-    #cbt-hist-table tbody td .cbt-hist-meta, #cbt-hist-table tbody td .cbt-hist-rate,
-    #cbt-weekly-table tbody td .cbt-hist-meta, #cbt-weekly-table tbody td .cbt-hist-rate,
-    #cbt-hof-table tbody td .cbt-hist-meta, #cbt-hof-table tbody td .cbt-hist-rate {
-      line-height: 1.3 !important; vertical-align: middle !important;
-    }
-
-    /* Search-result rows and Names use the same physical row height as the
-       four data tables. This keeps a filtered/cross-tab result from looking
-       shorter, taller or offset when it appears underneath the main table. */
-    #cbt-names-table tbody tr, .cbt-search-row {
-      height: 48px !important; min-height: 48px !important; box-sizing: border-box;
-    }
-    #cbt-names-table tbody td {
-      height: 48px !important; padding: 0 10px !important;
-      vertical-align: middle !important; line-height: 1.3 !important; box-sizing: border-box;
-    }
-    .cbt-search-row {
-      display: grid !important; grid-template-columns: 40% 40% 20%;
-      width: 100% !important; margin: 0 !important; padding: 0 !important;
-      align-items: stretch; overflow: hidden;
-    }
-    .cbt-search-row-name, .cbt-search-row-mid, .cbt-search-row-rate {
-      display: flex !important; align-items: center; height: 48px !important;
-      box-sizing: border-box; min-width: 0; overflow: hidden;
-    }
-    .cbt-search-row-name { width: auto !important; padding: 0 10px !important; text-overflow: ellipsis; white-space: nowrap; }
-    .cbt-search-row-mid  { width: auto !important; padding: 0 6px !important; justify-content: center; text-overflow: ellipsis; white-space: nowrap; }
-    .cbt-search-row-rate {
-      width: auto !important; padding: 0 10px !important;
-      justify-content: center; white-space: nowrap;
-      background: transparent !important; color: inherit;
-    }
-    .cbt-search-row-rate > .cbt-hist-rate {
-      flex: 0 0 38px;
-      width: 38px; min-width: 38px; height: 24px;
-      display: inline-flex !important;
-      align-items: center; justify-content: center;
-      padding: 0 !important; line-height: 1 !important;
-      text-align: center;
-    }
-
-
-    /* Stable column geometry on every summary table. Filtering now changes
-       only which rows are visible; it cannot change column width or row width. */
-    #cbt-hist-table, #cbt-weekly-table, #cbt-names-table { width: 100%; table-layout: fixed; }
-    #cbt-hist-table th:nth-child(1), #cbt-hist-table td:nth-child(1) { width: 40%; }
-    #cbt-hist-table th:nth-child(2), #cbt-hist-table td:nth-child(2) { width: 20%; }
-    #cbt-hist-table th:nth-child(3), #cbt-hist-table td:nth-child(3) { width: 20%; }
-    #cbt-hist-table th:nth-child(4), #cbt-hist-table td:nth-child(4) { width: 20%; }
-    #cbt-weekly-table th:nth-child(1), #cbt-weekly-table td:nth-child(1) { width: 34%; }
-    #cbt-weekly-table th:nth-child(2), #cbt-weekly-table td:nth-child(2) { width: 11%; }
-    #cbt-weekly-table th:nth-child(3), #cbt-weekly-table td:nth-child(3) { width: 12%; }
-    #cbt-weekly-table th:nth-child(4), #cbt-weekly-table td:nth-child(4) { width: 15%; }
-    #cbt-weekly-table th:nth-child(5), #cbt-weekly-table td:nth-child(5) { width: 16%; }
-    #cbt-weekly-table th:nth-child(6), #cbt-weekly-table td:nth-child(6) { width: 12%; }
-
-    /* ══════════════════════════════════════
-       HALL OF FAME
-    ══════════════════════════════════════ */
-    /* Every tab view is pinned to the panel's width so switching tabs can
-       never widen, narrow or shift the dashboard. The Fastest table has the
-       most columns, so it scrolls internally rather than pushing outward. */
-    #cbt-live-view, #cbt-history-view, #cbt-weekly-view,
-    #cbt-names-view, #cbt-hof-view {
+    #cbt-history-view {
       width: 100%; max-width: 100%; box-sizing: border-box;
     }
-    #cbt-hof-view { overflow-x: auto; }
-    #cbt-hof-table { width: 100%; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
-    #cbt-hof-table th:nth-child(1), #cbt-hof-table td:nth-child(1) { width: 36%; }
-    #cbt-hof-table th:nth-child(2), #cbt-hof-table td:nth-child(2) { width: 14%; }
-    #cbt-hof-table th:nth-child(3), #cbt-hof-table td:nth-child(3) { width: 14%; }
-    #cbt-hof-table th:nth-child(4), #cbt-hof-table td:nth-child(4) { width: 18%; }
-    #cbt-hof-table th:nth-child(5), #cbt-hof-table td:nth-child(5) { width: 18%; }
-    #cbt-hof-table thead tr {
-      border-bottom: 2px solid var(--cb-border); background: #f8fafc;
-      position: sticky; top: 0; z-index: 1;
-    }
-    #cbt-hof-table th {
-      color: var(--cb-text2); font-weight: 700; font-size: 10px;
-      text-transform: uppercase; letter-spacing: 0.06em;
-      padding: 8px 6px; text-align: center; background: #f8fafc; white-space: nowrap;
-      /* short titles plus clipping: at larger sizes a heading now truncates
-         inside its own column instead of running into the next one */
-      overflow: hidden; text-overflow: ellipsis; max-width: 0;
-    }
-    #cbt-hof-table th:first-child, #cbt-hof-table td:first-child { text-align: left; }
-    #cbt-hof-table td {
-      border-bottom: 1px solid var(--cb-border); text-align: center;
-      font-size: 14px; color: var(--cb-text);
-    }
-    #cbt-hof-table tbody tr:last-child td { border-bottom: none; }
-    #cbt-hof-table tbody tr:nth-child(even) td { background: var(--cb-row-alt); }
-    #cbt-hof-table tbody tr:hover td { background: #edf2fb !important; }
-    #cbt-hof-table tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 var(--cb-blue); }
-    /* the podium */
-    #cbt-hof-table tbody tr.cbt-hof-1 td { background: linear-gradient(90deg, rgba(212,160,23,.20), rgba(212,160,23,.02) 60%) !important; }
-    #cbt-hof-table tbody tr.cbt-hof-2 td { background: linear-gradient(90deg, rgba(154,171,184,.20), rgba(154,171,184,.02) 60%) !important; }
-    #cbt-hof-table tbody tr.cbt-hof-3 td { background: linear-gradient(90deg, rgba(184,115,51,.18), rgba(184,115,51,.02) 60%) !important; }
-    #cbt-hof-table tbody tr.cbt-hof-1 .cbt-assoc,
-    #cbt-hof-table tbody tr.cbt-hof-2 .cbt-assoc,
-    #cbt-hof-table tbody tr.cbt-hof-3 .cbt-assoc { font-weight: 700 !important; }
-    .cbt-hof-peak {
-      font-family: var(--cb-mono); font-size: 15px; font-weight: 800;
-      font-variant-numeric: tabular-nums; color: #0a6e2e;
-      background: rgba(0,200,83,.10); padding: 2px 8px; border-radius: 4px; display: inline-block;
-    }
-    .cbt-hof-when { font-size: 11px; color: var(--cb-text3); font-variant-numeric: tabular-nums; white-space: nowrap; }
-    #cbt-hof-empty {
-      display: none; text-align: center; color: var(--cb-text3);
-      padding: 16px 12px; font-style: italic; font-size: 13px; line-height: 1.5;
-    }
-    /* night mode */
-    #cbt-panel.dark #cbt-hof-table thead tr { background: #161b22 !important; border-bottom-color: #21262d !important; }
-    #cbt-panel.dark #cbt-hof-table th { background: #161b22 !important; color: #8faac0 !important; }
-    #cbt-panel.dark #cbt-hof-table td { color: #c9d1d9 !important; border-bottom-color: #21262d !important; }
-    #cbt-panel.dark #cbt-hof-table tbody tr:nth-child(even) td { background: #161b22 !important; }
-    #cbt-panel.dark #cbt-hof-table tbody tr:hover td { background: #1c2333 !important; }
-    #cbt-panel.dark #cbt-hof-table tbody tr:hover td:first-child { box-shadow: inset 3px 0 0 #58a6ff; }
-    #cbt-panel.dark #cbt-hof-table tbody tr.cbt-hof-1 td { background: linear-gradient(90deg, rgba(246,211,101,.18), rgba(246,211,101,.02) 60%) !important; }
-    #cbt-panel.dark #cbt-hof-table tbody tr.cbt-hof-2 td { background: linear-gradient(90deg, rgba(208,216,224,.16), rgba(208,216,224,.02) 60%) !important; }
-    #cbt-panel.dark #cbt-hof-table tbody tr.cbt-hof-3 td { background: linear-gradient(90deg, rgba(232,185,122,.16), rgba(232,185,122,.02) 60%) !important; }
-    #cbt-panel.dark .cbt-hof-peak { color: #3fb950 !important; background: rgba(0,200,83,.07) !important; }
-    #cbt-panel.dark .cbt-hof-when { color: #7a8fa3 !important; }
-    #cbt-panel.dark #cbt-hof-empty { color: #6e7b8d !important; }
-
-
-    /* ══════════════════════════════════════
-       QR CODE FROM SELECTED TEXT
-    ══════════════════════════════════════ */
     #cbt-qr-overlay {
       position: fixed; inset: 0; z-index: 2147483646;
       background: transparent !important;
@@ -1452,12 +466,9 @@
       font-family: var(--cb-sans);
       pointer-events: none;
     }
-
-    /* QR popup can only snap along the bottom row.
-       No free-floating coordinates are kept, which makes placement stable. */
-    #cbt-qr-overlay[data-qr-pos="bottom-left"]   { align-items:flex-end; justify-content:flex-start; }
+    #cbt-qr-overlay[data-qr-pos="bottom-left"] { align-items:flex-end; justify-content:flex-start; }
     #cbt-qr-overlay[data-qr-pos="bottom-center"] { align-items:flex-end; justify-content:center; }
-    #cbt-qr-overlay[data-qr-pos="bottom-right"]  { align-items:flex-end; justify-content:flex-end; }
+    #cbt-qr-overlay[data-qr-pos="bottom-right"] { align-items:flex-end; justify-content:flex-end; }
     #cbt-qr-card {
       pointer-events: auto;
       background: #ffffff !important;
@@ -1471,8 +482,8 @@
       animation: cbtQrCornerIn .12s ease-out;
     }
     @keyframes cbtQrCornerIn {
-      from { opacity: 0; transform: translateY(8px); }
-      to   { opacity: 1; transform: translateY(0); }
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
     }
     #cbt-qr-head {
       position: relative;
@@ -1496,8 +507,7 @@
       white-space: nowrap;
       pointer-events: none;
     }
-    #cbt-qr-left,
-    #cbt-qr-right {
+    #cbt-qr-left, #cbt-qr-right {
       cursor: pointer;
       border: none;
       background: transparent;
@@ -1512,23 +522,19 @@
       line-height: 1;
       transition: color .12s, background .12s, opacity .12s;
     }
-    #cbt-qr-left,
-    #cbt-qr-right {
+    #cbt-qr-left, #cbt-qr-right {
       font-size: 18px;
       font-weight: 900;
     }
-    #cbt-qr-left:hover:not(:disabled),
-    #cbt-qr-right:hover:not(:disabled) {
+    #cbt-qr-left:hover:not(:disabled), #cbt-qr-right:hover:not(:disabled) {
       color: var(--cb-blue);
       background: rgba(41,121,255,.08);
     }
-    #cbt-qr-left:disabled,
-    #cbt-qr-right:disabled {
+    #cbt-qr-left:disabled, #cbt-qr-right:disabled {
       cursor: default;
       opacity: .28;
     }
-    #cbt-qr-head-left,
-    #cbt-qr-head-right {
+    #cbt-qr-head-left, #cbt-qr-head-right {
       display: flex;
       align-items: center;
       z-index: 1;
@@ -1572,11 +578,6 @@
       border-color: var(--cb-blue);
       box-shadow: 0 0 0 2px rgba(41,121,255,.12);
     }
-
-
-    /* ══════════════════════════════════════
-       AUTO FORCE ASSIGN
-    ══════════════════════════════════════ */
     #cbt-afa-btn {
       cursor: pointer; font-size: 11px !important; font-weight: 800;
       letter-spacing: .04em; padding: 3px 9px !important;
@@ -1586,7 +587,6 @@
     }
     #cbt-afa-btn:hover { background: var(--cb-blue-dim); border-color: var(--cb-blue-dim) !important; }
     #cbt-afa-btn.busy { background: var(--cb-amber); border-color: var(--cb-amber) !important; color: #3a2600 !important; }
-
     #cbt-afa-overlay {
       position: fixed; inset: 0; z-index: 2147483645;
       background: rgba(13,27,42,.45);
@@ -1697,9 +697,6 @@
       overflow-wrap: anywhere;
       word-break: normal;
     }
-
-    /* Missing Package QR is a read-only helper inside the existing Run menu.
-       It intentionally uses the same red alert language as the dashboard. */
     .cbt-afa-missing-btn {
       background: #d93025 !important;
       border-color: #d93025 !important;
@@ -1721,8 +718,7 @@
       transform: translateY(-1px);
     }
     #cbt-afa-card.cbt-afa-missing-qr-card { width: 980px; box-sizing: border-box; }
-    #cbt-afa-card.cbt-afa-missing-qr-card #cbt-afa-title,
-    #cbt-afa-card.cbt-afa-missing-qr-card #cbt-afa-bar { white-space: nowrap; flex-wrap: nowrap; }
+    #cbt-afa-card.cbt-afa-missing-qr-card #cbt-afa-title, #cbt-afa-card.cbt-afa-missing-qr-card #cbt-afa-bar { white-space: nowrap; flex-wrap: nowrap; }
     .cbt-missing-qr-summary {
       margin-bottom: 10px;
       color: var(--cb-text2);
@@ -1774,8 +770,7 @@
       display: grid;
       grid-template-columns: repeat(2, 260px);
       justify-content: center;
-      /* Keep the two scanner targets very far apart so aiming at one QR does
-         not easily place the other QR inside the scanner's field of view. */
+
       column-gap: 400px;
       row-gap: 50px;
       align-items: start;
@@ -1849,12 +844,8 @@
     .cbt-afa-note {
       font-size: 12px; color: var(--cb-text2); line-height: 1.55;
       padding: 8px 13px 0; }
-
-    /* ══════════════════════════════════════
-       ASSOCIATE AUTOCOMPLETE (assignment fields)
-    ══════════════════════════════════════ */
     #cbt-ac-drop {
-      position: fixed; z-index: 2147483647;   /* above any site modal */
+      position: fixed; z-index: 2147483647;
       background: #fff; border: 1px solid var(--cb-border); border-radius: 9px;
       box-shadow: 0 12px 36px rgba(13,27,42,.28), 0 2px 8px rgba(13,27,42,.16);
       font-family: var(--cb-sans); overflow: hidden;
@@ -1887,12 +878,9 @@
       padding: 6px 12px; font-size: 10px; color: var(--cb-text3);
       background: #f8fafc; border-top: 1px solid var(--cb-border); text-align: center;
     }
-
-    /* Navbar: shared outer-control metrics; Run's label is never a second button. */
     #cbt-header { gap: 16px; flex-wrap: wrap; padding: 14px 18px; }
     #cbt-controls { gap: 8px; flex-wrap: wrap; justify-content: flex-end; margin-left: auto; }
-    #cbt-panel #cbt-controls > span,
-    #cbt-panel #cbt-controls > button {
+    #cbt-panel #cbt-controls > span, #cbt-panel #cbt-controls > button {
       display: inline-flex !important; align-items: center; justify-content: center;
       box-sizing: border-box; height: 32px !important; min-height: 32px;
       min-width: 34px; padding: 0 10px !important; border-radius: 6px !important;
@@ -1909,56 +897,27 @@
     #cbt-panel #cbt-controls > button#cbt-afa-btn:hover { box-shadow:0 0 0 2px rgba(41,121,255,.35); }
     #cbt-panel #cbt-controls > button#cbt-afa-btn:focus-visible { outline:2px solid #2979ff; outline-offset:3px; }
     #cbt-panel #cbt-controls > button#cbt-afa-btn > .cbt-afa-lbl { pointer-events:none; user-select:none; }
-    #cbt-panel #cbt-controls #cbt-afa-btn > .cbt-afa-lbl,
-    #cbt-panel.dark #cbt-controls #cbt-afa-btn > .cbt-afa-lbl {
+    #cbt-panel #cbt-controls #cbt-afa-btn > .cbt-afa-lbl, #cbt-panel.dark #cbt-controls #cbt-afa-btn > .cbt-afa-lbl {
       display: inline; border: 0 !important; padding: 0 !important; margin: 0;
       background: transparent !important; box-shadow: none !important; border-radius: 0 !important;
       font-size: inherit; line-height: inherit; color: inherit !important; cursor: inherit;
     }
-    #cbt-panel #cbt-controls > #cbt-collapse-btn,
-    #cbt-panel.dark #cbt-controls > #cbt-collapse-btn {
-      background: #2979ff !important; border-color: #1f63d6 !important;
-      color: #fff !important; -webkit-text-fill-color: #fff;
-      box-shadow: 0 1px 2px rgba(13,27,42,.12);
-    }
-    #cbt-panel #cbt-controls > #cbt-collapse-btn:hover,
-    #cbt-panel.dark #cbt-controls > #cbt-collapse-btn:hover {
-      background: #1f63d6 !important; border-color: #1a54b8 !important;
-    }
-    #cbt-panel #cbt-controls > #cbt-collapse-btn:active { background: #1c58bd !important; }
     #cbt-panel #cbt-controls > span:focus-visible { outline: 2px solid #2979ff; outline-offset: 3px; }
-
-    /* Sort visually so Angular can retain ownership of its repeated DOM nodes. */
     .cbt-task-sort-layout { display: flex !important; flex-direction: column !important; }
     .cbt-task-sort-layout > job-card { flex: 0 0 auto; width: 100%; min-width: 0; }
     .cbt-task-sort-layout > :not(job-card) { order: -1; }
     .cbt-task-sort-layout > .job-card-header { order: -1 !important; }
-
-    /* Tasks containing a package whose Last Known Location starts P-1-H. */
-    job-card.cbt-p1h-highlight,
-    job-card[data-cbt-p1h="1"],
-    job-card.cbt-p1h-highlight > .row,
-    job-card[data-cbt-p1h="1"] > .row,
-    job-card.cbt-p1h-highlight > div.row > div[class*="col-"],
-    job-card[data-cbt-p1h="1"] > div.row > div[class*="col-"] {
+    job-card.cbt-p1h-highlight, job-card[data-cbt-p1h="1"], job-card.cbt-p1h-highlight > .row, job-card[data-cbt-p1h="1"] > .row, job-card.cbt-p1h-highlight > div.row > div[class*="col-"], job-card[data-cbt-p1h="1"] > div.row > div[class*="col-"] {
       background-color: #fff2a8 !important;
     }
-    job-card.cbt-p1h-highlight,
-    job-card[data-cbt-p1h="1"] {
+    job-card.cbt-p1h-highlight, job-card[data-cbt-p1h="1"] {
       box-shadow: inset 5px 0 0 #f0b400, inset 0 0 0 1px rgba(176,124,0,.34) !important;
     }
-
     #cbt-header, #cbt-controls { flex-wrap: nowrap !important; }
     #cbt-header { overflow-x: auto; }
     #cbt-title { flex-shrink: 0; white-space: nowrap; }
     #cbt-controls { flex-shrink: 0; }
-
-    /* Viewport safeguards for automatic scaling, without nested body zoom. */
-    #cbt-tp, #cbt-afa-card, #cbt-qr-card { overflow: auto !important; }
-    #cbt-tp { box-sizing: border-box; }
-    #cbt-tp-header, #cbt-tp-body { min-width: 420px; box-sizing: border-box; }
-    #cbt-tp-header, #cbt-tp-controls { flex-wrap: nowrap; }
-    #cbt-tp-title, #cbt-tp-controls { flex-shrink: 0; white-space: nowrap; }
+    #cbt-afa-card, #cbt-qr-card { overflow: auto !important; }
     #cbt-qr-card, #cbt-afa-card { flex-shrink: 0; }
     #cbt-afa-card { box-sizing: border-box; }
     #cbt-afa-card:not(.cbt-afa-missing-qr-card) { min-height: 0; }
@@ -1969,121 +928,15 @@
     .cbt-missing-qr-tile[data-qr-copy]:focus-visible { outline: 2px solid #2979ff; outline-offset: 3px; }
     .cbt-missing-qr-value { position: relative; }
     .cbt-missing-qr-value .cbt-copied-tag { position: absolute; right: 4px; bottom: 100%; background: #16803d; color: white; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
-
-    /* Larger dashboard type; fixed row geometry remains identical in every status. */
-    #cbt-panel .cbt-tab { font-size: 16px; letter-spacing: .06em; }
     #cbt-panel table th { font-size: 14px; letter-spacing: .06em; white-space: nowrap; }
-    #cbt-panel #cbt-live-search-input, #cbt-panel #cbt-hist-search-input,
-    #cbt-panel #cbt-search-input, #cbt-panel #cbt-names-search-input { font-size: 18px; }
-    #cbt-panel table tbody td .cbt-assoc, #cbt-panel .cbt-name-cell,
-    #cbt-panel .cbt-search-row-name { font-size: 20px !important; line-height: 1.25 !important; }
+    #cbt-panel #cbt-search-input { font-size: 18px; }
     #cbt-panel table tbody td .cbt-ref { font-size: 13px !important; line-height: 1.2 !important; }
-    #cbt-panel table tbody td .cbt-elapsed, #cbt-panel table tbody td .cbt-rate,
-    #cbt-panel table tbody td .cbt-hist-rate, #cbt-panel table tbody td .cbt-hist-meta { font-size: 20px !important; }
     #cbt-panel table tbody td { font-size: 18px; }
-    #cbt-panel #cbt-table .cbt-cw { height: 44px !important; min-height: 44px !important; max-height: 44px !important; }
-    #cbt-panel #cbt-table .cbt-cw-top { height: 24px !important; min-height: 24px !important; max-height: 24px !important; }
-    #cbt-panel #cbt-table .cbt-assoc, #cbt-panel #cbt-table .cbt-ref,
-    #cbt-panel #cbt-table .cbt-rate { max-height: 24px !important; }
-    #cbt-panel #cbt-table .cbt-elapsed { width: 76px !important; min-width: 76px !important; max-width: 76px !important; height: 26px !important; min-height: 26px !important; max-height: 26px !important; line-height: 26px !important; }
-    #cbt-panel .cbt-slow-alert { font-size: 11px; }
-
-    /* Rank is an independent, non-shrinking item; only the name may ellipsize. */
     #cbt-panel .cbt-cw { height: 46px !important; min-height: 46px !important; max-height: 46px !important; }
-    #cbt-panel .cbt-cw-top, #cbt-panel #cbt-table .cbt-cw-top { height: 30px !important; min-height: 30px !important; max-height: 30px !important; gap: 8px; }
-    #cbt-panel .cbt-cw-top > .cbt-rank {
-      display: inline-flex; flex: 0 0 28px; width: 28px; min-width: 28px; max-width: 28px;
-      height: 28px; min-height: 28px; max-height: 28px; border-radius: 50%;
-      box-sizing: border-box; padding: 0; margin: 0; align-items: center; justify-content: center;
-      line-height: 1; font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap;
-      vertical-align: middle; overflow: visible;
-    }
-    #cbt-panel .cbt-assoc, #cbt-panel .cbt-name-cell, #cbt-panel .cbt-search-row-name, #cbt-tp .cbt-tp-row-name { cursor: default; }
-
-    #cbt-profile-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 2147483646; }
-    #cbt-profile-card { width: 680px; box-sizing: border-box; background: #fff; color: #172435; border: 1px solid #d4dce5; border-radius: 14px; overflow: hidden; font-family: var(--cb-sans, sans-serif); font-size: 16px; }
-    #cbt-profile-card header { display:flex; align-items:center; gap:12px; padding:16px; border-bottom:1px solid #d4dce5; }
-    #cbt-profile-card header strong { flex:1; min-width:0; white-space:nowrap; overflow-x:auto; }
-    #cbt-profile-card button { cursor:pointer; background:#2979ff; color:white; border:0; border-radius:6px; font-size:22px; width:32px; height:32px; }
-    .cbt-profile-controls { display:flex; align-items:center; justify-content:space-between; padding:14px 16px; white-space:nowrap; }
-    #cbt-profile-card select { font:inherit; margin-left:8px; padding:6px 10px; background:#f8fafc !important; color:#172435 !important; border:1px solid #cbd5e1; border-radius:6px; color-scheme:light; }
-    #cbt-profile-card select option { background:#f8fafc !important; color:#172435 !important; }
-    #cbt-profile-card .cbt-profile-controls label, #cbt-profile-card .cbt-profile-controls > span { color:inherit !important; }
-    #cbt-profile-card select:focus-visible { outline:2px solid #2979ff; outline-offset:2px; }
-    #cbt-profile-card .cbt-profile-period { display:inline-block; position:relative; margin-left:8px; vertical-align:middle; }
-    #cbt-profile-card .cbt-profile-period button { display:block; box-sizing:border-box; width:110px; height:36px; padding:6px 10px; font:inherit; text-align:left; white-space:nowrap; background:#f8fafc; color:#172435; border:1px solid #cbd5e1; border-radius:6px; }
-    #cbt-profile-card .cbt-profile-period-menu { display:block; position:absolute; left:0; top:100%; width:110px; z-index:10; padding:0; background:#f8fafc; border:1px solid #cbd5e1; box-sizing:border-box; border-radius:3px; overflow:hidden; }
-    #cbt-profile-card .cbt-profile-period-menu[hidden] { display:none !important; }
-    #cbt-profile-card .cbt-profile-period-menu button { display:block !important; width:100% !important; margin:0 !important; border:0; border-radius:0; }
-    #cbt-profile-overlay.dark .cbt-profile-period button,
-    #cbt-profile-overlay.dark .cbt-profile-period-menu { background:#18212d; color:#e6edf3; border-color:#334155; }
-    #cbt-profile-card .cbt-profile-period-menu button:hover { background:#000 !important; color:#fff !important; }
-    #cbt-profile-card .cbt-profile-period-menu button:focus-visible { outline:2px solid #2979ff; outline-offset:-2px; }
-    .cbt-profile-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:0 16px 14px; }
-    .cbt-profile-metrics > div { background:#eff4fa; border-radius:8px; padding:12px; white-space:nowrap; }
-    .cbt-profile-metrics span { display:block; font-size:13px; }
-    .cbt-profile-metrics b { display:block; font-size:24px; font-variant-numeric:tabular-nums; }
-    .cbt-profile-table-wrap { max-height:300px; overflow:auto; margin:0 16px; }
-    #cbt-profile-card .cbt-profile-detail-row > td { padding:10px 8px 14px; background:#f0f6ff; }
-    #cbt-profile-card .cbt-profile-details { background:#fff; border:1px solid #93b4e7; border-left:4px solid #2979ff; border-radius:8px; padding:10px; }
-    #cbt-profile-card .cbt-profile-details-title { display:block; color:#174ea6; font-size:14px; margin-bottom:8px; }
-    #cbt-profile-card .cbt-profile-details-scroll { overflow-x:auto; }
-    #cbt-profile-card .cbt-profile-details th { background:#eaf2ff; font-size:12px; }
-    #cbt-profile-card .cbt-profile-details td { font-size:13px; }
-    #cbt-profile-overlay.dark #cbt-profile-card .cbt-profile-detail-row > td { background:#101c2d; }
-    #cbt-profile-overlay.dark #cbt-profile-card .cbt-profile-details { background:#18212d; border-color:#36577b; border-left-color:#58a6ff; }
-    #cbt-profile-overlay.dark #cbt-profile-card .cbt-profile-details-title { color:#9ecbff; }
-    #cbt-profile-overlay.dark #cbt-profile-card .cbt-profile-details th { background:#24364e; }
-    #cbt-profile-card table { width:100%; border-collapse:collapse; }
-    #cbt-profile-card button[data-profile-hour] { width:100%; height:auto; min-height:32px; padding:6px 8px; font:inherit; text-align:left; white-space:nowrap; background:transparent; color:inherit; transition:background-color 120ms ease; }
-    #cbt-profile-card button[data-profile-hour]:hover,
-    #cbt-profile-card button[data-profile-hour][aria-expanded="true"] { background:#dbeafe; color:#174ea6; }
-    #cbt-profile-card button[data-profile-hour]:focus-visible { outline:2px solid #2979ff; outline-offset:2px; background:#dbeafe; color:#174ea6; }
-    #cbt-profile-overlay.dark #cbt-profile-card button[data-profile-hour]:hover,
-    #cbt-profile-overlay.dark #cbt-profile-card button[data-profile-hour][aria-expanded="true"],
-    #cbt-profile-overlay.dark #cbt-profile-card button[data-profile-hour]:focus-visible { background:#1e3a5f; color:#e6f0ff; }
-    #cbt-profile-card th, #cbt-profile-card td { padding:10px 8px; white-space:nowrap; text-align:right; border-bottom:1px solid #d4dce5; }
-    #cbt-profile-card th:first-child, #cbt-profile-card td:first-child { text-align:left; }
-    #cbt-profile-card p { margin:14px 16px; font-size:12px; line-height:1.5; }
-    #cbt-profile-overlay.dark #cbt-profile-card { background:#0d1117; color:#dce6ef; border-color:#334155; }
-    #cbt-profile-overlay.dark .cbt-profile-metrics > div { background:#18212d; }
-    #cbt-profile-overlay.dark #cbt-profile-card select,
-    #cbt-profile-overlay.dark #cbt-profile-card select option { background:#18212d !important; color:#e6edf3 !important; border-color:#334155; color-scheme:dark; }
-    #cbt-profile-overlay.dark #cbt-profile-card header,
-    #cbt-profile-overlay.dark #cbt-profile-card th,
-    #cbt-profile-overlay.dark #cbt-profile-card td { border-color:#334155; }
-    #cbt-panel .cbt-assoc, #cbt-panel .cbt-name-cell, #cbt-panel .cbt-search-row-name, #cbt-tp .cbt-tp-row-name { cursor:pointer; }
-    #cbt-panel [title="Open associate profile"]:focus-visible, #cbt-tp [title="Open associate profile"]:focus-visible { outline:2px solid #2979ff; outline-offset:2px; }
+    #cbt-panel .cbt-cw-top { height: 30px !important; min-height: 30px !important; max-height: 30px !important; gap: 8px; }
+    #cbt-panel [title="Open associate profile"]:focus-visible { outline:2px solid #2979ff; outline-offset:2px; }
     .cbt-ac-nm { overflow: visible; text-overflow: clip; flex-shrink: 0; }
     .cbt-ac-hd, .cbt-ac-foot, .cbt-ac-none { white-space: nowrap; }
-
-    /* Same fixed Live geometry, applied once by CSS instead of thousands of
-       inline style writes whenever one rate changes. */
-    #cbt-panel #cbt-live-view #cbt-table.cbt-live-geometry thead tr,
-    #cbt-panel #cbt-live-view #cbt-table.cbt-live-geometry tbody tr {
-      display:grid !important;
-      grid-template-columns:minmax(0,40%) minmax(0,30%) minmax(0,30%) !important;
-      width:100% !important; max-width:100% !important; box-sizing:border-box !important;
-    }
-    #cbt-panel #cbt-live-view #cbt-table.cbt-live-geometry tbody tr {
-      height:48px !important; min-height:48px !important; max-height:48px !important;
-      margin:0 !important; padding:0 !important; overflow:hidden !important;
-    }
-    #cbt-panel #cbt-live-view #cbt-table.cbt-live-geometry tbody tr > * {
-      width:auto !important; min-width:0 !important;
-      height:48px !important; min-height:48px !important; max-height:48px !important;
-      padding:0 10px !important; margin:0 !important; display:flex !important;
-      align-items:center !important; justify-content:center !important;
-      overflow:hidden !important; box-sizing:border-box !important;
-    }
-    #cbt-panel #cbt-live-view #cbt-table.cbt-live-geometry tbody tr > :first-child { justify-content:flex-start !important; }
-    #cbt-panel #cbt-live-view #cbt-table.cbt-live-geometry tbody tr > :nth-child(2) .cbt-elapsed {
-      display:inline-flex !important; align-items:center !important; justify-content:center !important;
-      width:58px !important; min-width:58px !important; max-width:58px !important;
-      height:22px !important; min-height:22px !important; max-height:22px !important;
-      padding:0 !important; margin-left:auto !important; margin-right:auto !important;
-      text-align:center !important; line-height:22px !important; transform:none !important; box-sizing:border-box !important;
-    }
 
   `
 
@@ -2278,20 +1131,6 @@
      timer. Used where a delay would be SEEN: the Time Left column is
      destroyed by the page's own re-render, and anything slower than a frame
      shows up as the value blinking out and back. */
-  function coalescedFrame(fn) {
-    var pending = false;
-    var raf = (typeof requestAnimationFrame === 'function')
-      ? requestAnimationFrame
-      : function (cb) { return setTimeout(cb, 16); };
-    return function () {
-      if (pending) return;
-      pending = true;
-      raf(function () {
-        pending = false;
-        try { fn(); } catch (e) {}
-      });
-    };
-  }
 
   /* Performance guard:
      Whole-page observers must ignore DOM mutations created by this userscript
@@ -3100,7 +1939,6 @@
     return true;
   }
 
-
   var _cbtRecRates = { store: '', at: 0, values: [] };
   function cbtRecConservativeRate(jobs, nowMs) {
     var store = cbtRecStoreKey(), rates = [];
@@ -3696,11 +2534,6 @@
     };
   }
 
-  function cbtRawBatchingStartMs(data, liveOnly) {
-    var info = cbtBatchingOpInfo(data, !!liveOnly);
-    return info ? info.startMs : null;
-  }
-
   function cbtIsLiveBatch(data) {
     if (!data || typeof data !== 'object') return false;
     var jobState = String(data.state || '').toUpperCase();
@@ -3777,59 +2610,6 @@
     return cur.ms;
   }
 
-  function cbtStableLiveStartMs(data, isLive) {
-    if (!data || typeof data !== 'object') return null;
-    var ref = data.shortClientRef != null ? String(data.shortClientRef) : '';
-    var generation = cbtTaskGeneration(data);
-    var cur = ref ? _cbtLiveStartByRef[ref] : null;
-
-    if (cur) {
-      /* Missing identity on a partial response is NOT a reason to reject the
-         existing lock. If an actual new job generation is present, wait for
-         that new task's own BATCHING start instead of borrowing the old one. */
-      if (!generation || !cur.generation || generation === cur.generation) return cur.ms;
-    }
-
-    if (isLive) {
-      /* Important fallback: activeJobsWithSiteSummary does not always carry
-         operationDetails in every deployment/response. If another current COMO
-         response contains the real BATCHING operation, allow it to seed the
-         clock ONCE. We never use `created` for a live timer and never replace a
-         same-generation lock after it has been chosen. */
-      var info = cbtBatchingOpInfo(data, true);
-      if (info && info.startMs) {
-        if (!ref) return info.startMs;
-
-        var now = cbtNowMs();
-        var fresh = {
-          ms: info.startMs,
-          generation: generation,
-          lastSeen: now,
-          missingSince: 0,
-          source: 'observed-live'
-        };
-
-        /* Different generation = the cart has a new batch, so a new start is
-           correct. Otherwise only fill a missing lock; do not twitch between
-           multiple timestamps. */
-        if (!cur || (generation && cur.generation && generation !== cur.generation)) {
-          _cbtLiveStartByRef[ref] = fresh;
-          return fresh.ms;
-        }
-
-        return cur.ms;
-      }
-
-      return null;
-    }
-
-    /* For a finished batch, use the latest BATCHING operation if the live lock
-       is unavailable, then fall back to created so history is not discarded. */
-    var opMs = cbtRawBatchingStartMs(data, false);
-    if (opMs) return opMs;
-    return cbtNormalizeEpochMs(data.created);
-  }
-
   function cbtForgetLiveStart(ref) {
     if (ref == null) return;
     ref = String(ref);
@@ -3887,10 +2667,6 @@
   function cbtReportRoot(kind) { return '/como_reports_v3/' + encodeURIComponent(STORE_ID || 'unknown') + '/' + kind; }
   function syncHistoryUrl() { return FIREBASE_URL + cbtReportRoot('today') + '.json'; }
   function syncWeeklyUrl()  { return FIREBASE_URL + cbtReportRoot('weekly') + '.json'; }
-  function syncHistoryDeviceUrl(devId) { return FIREBASE_URL + cbtReportRoot('today') + '/devices/' + devId + '.json'; }
-  function syncHistoryMetaUrl(devId)   { return FIREBASE_URL + cbtReportRoot('today') + '/meta/' + devId + '.json'; }
-  function syncWeeklyDeviceUrl(devId)  { return FIREBASE_URL + cbtReportRoot('weekly') + '/devices/' + devId + '.json'; }
-  function syncWeeklyMetaUrl(devId)    { return FIREBASE_URL + cbtReportRoot('weekly') + '/meta/' + devId + '.json'; }
 
   // ── Own vs Remote cache keys ──
   // OWN = only this device's recorded batches (pushed to Pantry)
@@ -3992,14 +2768,12 @@
       _cbtDataBatchDepth--;
       if (!_cbtDataBatchDepth) {
         var history=_cbtBatchHistory, save=_cbtBatchHistoryDirty;
-        var hof=_cbtBatchHof, saveHof=_cbtBatchHofDirty;
         var weekly=_cbtBatchWeekly, saveWeek=_cbtBatchWeeklyDirty;
         var weekPeriod=_cbtBatchWeeklyPeriod, pushWeek=_cbtBatchWeeklyPush;
         _cbtBatchHistory=null; _cbtBatchHistoryDirty=false;
         _cbtBatchHof=null; _cbtBatchHofDirty=false;
         _cbtBatchWeekly=null; _cbtBatchWeeklyDirty=false; _cbtBatchWeeklyPeriod=null; _cbtBatchWeeklyPush=false;
         if (save && history) saveHistory(history);
-        if (saveHof && hof) hofSaveOwnTotals(hof);
         if (saveWeek && weekly) saveWeekly(weekly,!pushWeek,weekPeriod);
       }
     }
@@ -4080,30 +2854,7 @@
   var activeTab = 'live';
 
   var _liveRenderPending = false;
-  function requestLiveRender() {
-    cbtScheduleProfileRefresh();
-    /* Do not rebuild a hidden/non-mounted Live table. Data still updates in
-       taskCache and renders immediately when Live becomes visible.
-
-       The Live table body is #cbt-tbody. v23.9.24 accidentally checked a
-       different/nonexistent ID, so taskCache filled but the first Live render
-       was skipped until the user switched tabs. */
-    if (document.hidden || activeTab !== 'live') return;
-    if (!document.getElementById('cbt-tbody')) return;
-    if (_liveRenderPending) return;
-
-    _liveRenderPending = true;
-    var raf = (typeof requestAnimationFrame === 'function')
-      ? requestAnimationFrame
-      : function(cb){ return setTimeout(cb, 16); };
-
-    raf(function(){
-      _liveRenderPending = false;
-      if (activeTab === 'live' && document.getElementById('cbt-tbody')) {
-        try { renderLive(); } catch(e) {}
-      }
-    });
-  }
+  function requestLiveRender() { /* Lightweight edition: no lower dashboard view. */ }
   var weeklySortKey = 'bestRate', weeklySortAsc = false, weeklySearchTerm = '';
   var liveSortKey = 'rate', liveSortAsc = false, liveSearchTerm = '';
   /* Set once the user actually clicks a Live column header. Until then the
@@ -4183,16 +2934,6 @@
     var start = cbtDateKeyEpoch(currentWeekStartStr());
     if (!isFinite(day) || !isFinite(start)) return false;
     return day >= start && day < start + 7 * 86400000;
-  }
-
-  function fmt(s) {
-    if (s == null || isNaN(s) || s < 0) return '--:--';
-    return String(Math.floor(s / 60)).padStart(2,'0') + ':' + String(Math.floor(s % 60)).padStart(2,'0');
-  }
-  function fmtHours(s) {
-    if (!s) return '0h';
-    var h = s / 3600;
-    return h >= 1 ? h.toFixed(1) + 'h' : Math.round(s / 60) + 'm';
   }
 
   // loadWeekly / saveWeekly — OWN batches only. Never stores remote data.
@@ -4330,46 +3071,6 @@
   // Merge own + remote for display only.
   // The current day's Today report is overlaid as today's Weekly slice so a
   // batcher appears in Weekly immediately — not one day later at rollover.
-  function getDisplayWeekly() {
-    var _now = Date.now();
-    if (_dispWeekCache && (_now - _dispWeekTime) < 1500) return _dispWeekCache;
-    var own    = loadWeekly();
-    var remote = loadRemoteWeekly();
-    var out = {};
-
-    function addSlice(slice) { cbtAddWeeklySlice(out,slice); }
-
-    addSlice(own);
-    addSlice(remote);
-
-    /* Today's source of truth is Today itself. Replace any stale/legacy
-       current-day weekly slice instead of adding it and double-counting. */
-    var td = todayStr();
-    delete out[td];
-
-    var today = sanitizeHistory(getDisplayHistory());
-    var todayKeys = Object.keys(today);
-    if (todayKeys.length) {
-      out[td] = {};
-      for (var i = 0; i < todayKeys.length; i++) {
-        var assoc = todayKeys[i], r2 = today[assoc];
-        out[td][assoc] = {
-          totalPkgs: r2.totalPkgs||0,
-          totalSec: r2.totalSec||0,
-          runs: r2.runs||0,
-          totalMissing: r2.totalMissing||0,
-          totalExpected: r2.totalExpected||0,
-          bestRate: Math.max(Number(r2.bestRate)||0, Number(r2.lastRate)||0, Number(r2.avgRate)||0) || null,
-          lastRate: Number(r2.lastRate) > 0 ? Number(r2.lastRate) : null,
-          lastAt: Number(r2.lastAt) || 0, _cbtEvents:r2._cbtEvents || {}, _cbtLegacy:cbtPerformanceLegacy(r2)
-        };
-      }
-    }
-
-    Object.keys(out).forEach(function(day){ out[day]=cbtReconcileEventOwners(out[day]); });
-    _dispWeekCache = out; _dispWeekTime = _now;
-    return out;
-  }
 
   function cbtGmRequest(options) {
     var finished = false;
@@ -4487,11 +3188,6 @@
     // instead of reaching a fixed additive floor at higher browser zoom.
     return clampUiScale(cbtAutomaticUiScale() * (1 + _uiScaleBias / UI_SCALE_DEFAULT));
   }
-  function saveUiScale(v) {
-    _uiScaleBias = Math.round((clampUiScale(v) / cbtAutomaticUiScale() - 1) * UI_SCALE_DEFAULT * 10000) / 10000;
-    gmSet(UI_SCALE_KEY, String(_uiScaleBias));
-    try { localStorage.setItem(UI_SCALE_KEY, String(_uiScaleBias)); } catch(e) {}
-  }
 
   /* Every root this script owns. Popups are scaled on their inner card, not
      their full-screen backdrop, so the backdrop still covers the viewport
@@ -4562,14 +3258,7 @@
 
   /* Which theme is active right now. The board carries the truth once it
      exists; before that fall back to the stored preference. */
-  function isDarkMode() {
-    var p = document.getElementById('cbt-panel');
-    if (p) return p.classList.contains('dark');
-    try {
-      var v = localStorage.getItem('cbt_dark');
-      return v !== 'false' && v !== '0';
-    } catch(e) { return true; }
-  }
+  function isDarkMode() { return true; }
 
   /* Popups live on <body>, outside the board, so they cannot inherit its
      .dark class — they get their own marker instead. */
@@ -4579,19 +3268,6 @@
       var el = document.getElementById(id);
       if (el) el.classList.toggle('cbt-dark', dark);
     });
-  }
-
-  function setUiScale(v, skipSave) {
-    _uiScale = clampUiScale(v);
-    if (!skipSave) saveUiScale(_uiScale);
-    applyUiScale();
-  }
-  function stepUiScale(dir) { setUiScale(_uiScale + dir * UI_SCALE_STEP); }
-  function resetUiScale() {
-    _uiScaleBias = 0;
-    gmSet(UI_SCALE_KEY, '0');
-    try { localStorage.setItem(UI_SCALE_KEY, '0'); } catch(e) {}
-    applyUiScale();
   }
 
   // ── Text size (zoom) for the Associate Search (task detail) panel ──
@@ -4605,10 +3281,7 @@
     if (!v || isNaN(v)) v = 1;
     return Math.min(2.0, Math.max(0.7, v));
   }
-  function saveTpFontScale(v) {
-    gmSet(TP_FONT_SCALE_KEY, String(v));
-    try { localStorage.setItem(TP_FONT_SCALE_KEY, String(v)); } catch(e) {}
-  }
+
   function applyTpFontScale(tp, scale) {
     if (!tp) return;
     var body = tp.querySelector('#cbt-tp-body');
@@ -5692,476 +4365,19 @@
   var HOF_OWN_KEY         = 'cbt_hof_v2_reset_v239117_own_totals';
   var HOF_REMOTE_KEY      = 'cbt_hof_v2_reset_v239117_remote_totals';
 
-  function hofUrl(path)      { return FIREBASE_URL + path + '.json'; }
-  function hofRootPath(path) {
-    path = String(path || '');
-    if (path && path.charAt(0) !== '/') path = '/' + path;
-    return HOF_FIREBASE_ROOT + path;
-  }
-  function hofKey(assoc) {
-    /* Firebase keys may not contain . $ # [ ] / */
-    return String(assoc || '').trim().toLowerCase().replace(/[.$#\[\]\/]/g, '_');
-  }
-
-  function hofLoadJson(key) {
-    try { var gm = gmGet(key, null); if (gm) return (typeof gm === 'string') ? JSON.parse(gm) : gm; } catch(e) {}
-    try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch(e) { return {}; }
-  }
-  function hofSaveJson(key, obj) {
-    var json = JSON.stringify(obj || {});
-    if (gmGet(key,null)!==json) gmSet(key, json);
-    try { if(localStorage.getItem(key)!==json)localStorage.setItem(key, json); } catch(e) {}
-  }
-  function hofLoadPeaks()        { return hofLoadJson(HOF_PEAKS_KEY) || {}; }
-  function hofSavePeaks(p)       { hofSaveJson(HOF_PEAKS_KEY, p); }
-  function hofLoadLatest()       { return hofLoadJson(HOF_LATEST_KEY) || {}; }
-  function hofSaveLatest(p)      { hofSaveJson(HOF_LATEST_KEY, p); }
-  function hofLoadOwnTotals()    {
-    if (_cbtDataBatchDepth && _cbtBatchHof) return _cbtBatchHof;
-    var totals=cbtNormalizeHofTotals(hofLoadJson(HOF_OWN_KEY) || {});
-    if (_cbtDataBatchDepth) _cbtBatchHof=totals;
-    return totals;
-  }
-  function hofSaveOwnTotals(t)   {
-    if (_cbtDataBatchDepth) { _cbtBatchHof=t;_cbtBatchHofDirty=true;return; }
-    hofSaveJson(HOF_OWN_KEY, cbtNormalizeHofTotals(t));
-  }
-  function hofLoadRemoteTotals() { return cbtNormalizeHofTotals(hofLoadJson(HOF_REMOTE_KEY) || {}); }
-  function hofSaveRemoteTotals(t){ hofSaveJson(HOF_REMOTE_KEY, cbtNormalizeHofTotals(t)); }
-
   /* Latest is different from Peak: it ALWAYS follows the newest completed
      batch, even if that rate is lower than the associate's personal best. */
-  function hofMergeLatest(key, rec, batch) {
-    if (!key || !rec) return false;
-    var rate = Number(rec.rate), at = Number(rec.at) || 0;
-    if (Number(rec.schema) !== HOF_SCHEMA) return false;
-    if (!(Number(rec.pkgs) > 0) || Number(rec.elapsedSec) < 30) return false;
-    if (!(rate > 0) || !isFinite(rate) || rate > CBT_MAX_VALID_RATE) return false;
-
-    var latest = batch || hofLoadLatest();
-    var cur = latest[key];
-    var curAt = cur ? (Number(cur.at) || 0) : -1;
-
-    if (cur && curAt > at) return false;
-    if (cur && curAt === at && Number(cur.rate) === rate && (cur.assoc || '') === (rec.assoc || '')) return false;
-
-    latest[key] = {
-      assoc: rec.assoc || (cur && cur.assoc) || key,
-      rate: rate,
-      at: at,
-      pkgs: Number(rec.pkgs) || 0,
-      elapsedSec: Number(rec.elapsedSec) || 0,
-      schema: Number(rec.schema) || HOF_SCHEMA,
-      calc: rec.calc || 'packagesBatched/fullBatchingSpan'
-    };
-    if (!batch) hofSaveLatest(latest);
-    return true;
-  }
-
-  function hofPushLatest(key, assoc, rate, ts, pkgs, elapsedSec) {
-    rate = Number(rate);
-    ts = Number(ts) || Date.now();
-    pkgs = Number(pkgs) || 0;
-    elapsedSec = Number(elapsedSec) || 0;
-    if (!key || !(rate > 0) || !isFinite(rate) || rate > CBT_MAX_VALID_RATE) return;
-    if (!(elapsedSec >= 30) || !(pkgs > 0)) return;
-
-    var rec = {
-      assoc: assoc || key,
-      rate: rate,
-      at: ts,
-      pkgs: pkgs,
-      elapsedSec: elapsedSec,
-      schema: HOF_SCHEMA,
-      calc: 'packagesBatched/fullBatchingSpan'
-    };
-    hofMergeLatest(key, rec);
-
-    if (!syncEnabled()) {
-      if (activeTab === 'hof') renderHallOfFame();
-      return;
-    }
-
-    /* Read-before-write prevents an older/slower computer from overwriting a
-       newer latest rate that another computer already published. */
-    try {
-      cbtGmRequest({
-        method: 'GET', url: hofUrl(hofRootPath('/latest/' + key)),
-        headers: { 'Content-Type': 'application/json' },
-        onload: function(res) {
-          var remote = null;
-          try {
-            if (res.status >= 200 && res.status < 300 && res.responseText && res.responseText !== 'null') {
-              remote = JSON.parse(res.responseText);
-            }
-          } catch(e) {}
-
-          if (remote && (Number(remote.at) || 0) > ts) {
-            hofMergeLatest(key, remote);
-            if (activeTab === 'hof') renderHallOfFame();
-            return;
-          }
-
-          cbtGmRequest({
-            method: 'PUT', url: hofUrl(hofRootPath('/latest/' + key)),
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify(rec),
-            onload: function() {
-              hofMergeLatest(key, rec);
-              if (activeTab === 'hof') renderHallOfFame();
-            },
-            onerror: function() {
-              if (activeTab === 'hof') renderHallOfFame();
-            }
-          });
-        },
-        onerror: function() {
-          if (activeTab === 'hof') renderHallOfFame();
-        }
-      });
-    } catch(e) {}
-  }
 
   /* Local cache only ever moves a peak upward. */
-  function hofMergePeak(key, rec, batch) {
-    if (!key || !rec || typeof rec.rate !== 'number' || !(rec.rate > 0)) return false;
-    if (Number(rec.schema) !== HOF_SCHEMA) return false;
-    if (Number(rec.rate) > HOF_MAX_RATE) return false;
-    if (Number(rec.pkgs) < HOF_MIN_PKGS || Number(rec.elapsedSec) < HOF_MIN_SEC) return false;
-    var peaks = batch || hofLoadPeaks();
-    var cur = peaks[key];
-    if (cur && typeof cur.rate === 'number' && cur.rate >= rec.rate) return false;
-    peaks[key] = {
-      assoc: rec.assoc || (cur && cur.assoc) || key,
-      rate: rec.rate,
-      at: rec.at || null,
-      pkgs: Number(rec.pkgs) || 0,
-      elapsedSec: Number(rec.elapsedSec) || 0,
-      schema: Number(rec.schema) || HOF_SCHEMA,
-      calc: rec.calc || 'packagesBatched/fullBatchingSpan'
-    };
-    if (!batch) hofSavePeaks(peaks);
-    return true;
-  }
 
   /* Read the server value, then write ONLY if ours is strictly higher. */
-  function hofPushPeak(key, assoc, rate, ts, pkgs, elapsedSec) {
-    rate = Number(rate);
-    pkgs = Number(pkgs) || 0;
-    elapsedSec = Number(elapsedSec) || 0;
-    if (!(rate > 0) || !isFinite(rate) || rate > HOF_MAX_RATE) return;
-    if (pkgs < HOF_MIN_PKGS || elapsedSec < HOF_MIN_SEC) return;
-    if (!syncEnabled()) return;
-    try {
-      cbtGmRequest({
-        method: 'GET', url: hofUrl(hofRootPath('/peaks/' + key)),
-        headers: { 'Content-Type': 'application/json' },
-        onload: function(res){
-          var remote = null;
-          try {
-            if (res.status >= 200 && res.status < 300 && res.responseText && res.responseText !== 'null') {
-              remote = JSON.parse(res.responseText);
-            }
-          } catch(e) {}
-          if (remote && typeof remote.rate === 'number' && remote.rate >= rate) {
-            hofMergePeak(key, remote);      /* server already holds a better one */
-            if (activeTab === 'hof') renderHallOfFame();
-            return;
-          }
-          var rec = {
-            assoc: assoc,
-            rate: rate,
-            at: ts,
-            pkgs: pkgs,
-            elapsedSec: elapsedSec,
-            schema: HOF_SCHEMA,
-            calc: 'packagesBatched/fullBatchingSpan'
-          };
-          cbtGmRequest({
-            method: 'PUT', url: hofUrl(hofRootPath('/peaks/' + key)),
-            headers: { 'Content-Type': 'application/json' },
-            data: JSON.stringify(rec),
-            onload: function(){
-              hofMergePeak(key, rec);
-              if (activeTab === 'hof') renderHallOfFame();
-            },
-            onerror: function(){ hofMergePeak(key, rec); }   /* keep it locally, retry next record */
-          });
-        },
-        onerror: function(){
-          hofMergePeak(key, {
-            assoc: assoc, rate: rate, at: ts,
-            pkgs: pkgs, elapsedSec: elapsedSec,
-            schema: HOF_SCHEMA,
-            calc: 'packagesBatched/fullBatchingSpan'
-          });
-        }
-      });
-    } catch(e) {}
-  }
 
   var _hofTotalsTimer = null;
-  function hofPushTotals() {
-    if (!syncEnabled()) return;
-    if (_hofTotalsTimer) return;
-    _hofTotalsTimer = setTimeout(function(){
-      _hofTotalsTimer = null;
-      try {
-        var devId = MY_DEVICE_ID || getDeviceId();
-        cbtGmRequest({
-          method: 'PUT', url: hofUrl(hofRootPath('/totals/devices/' + devId)),
-          headers: { 'Content-Type': 'application/json' },
-          data: JSON.stringify(hofLoadOwnTotals()),
-          onload: function(){}, onerror: function(){}
-        });
-      } catch(e) {}
-    }, 2500);
-  }
 
   var _hofPullInFlight = false;
-  function hofPull(cb) {
-    if (!syncEnabled()) { if (cb) cb(); return; }
-    if (_hofPullInFlight) { if (cb) cb(); return; }
-    _hofPullInFlight = true;
-    try {
-      cbtGmRequest({
-        method: 'GET', url: hofUrl(HOF_FIREBASE_ROOT),
-        headers: { 'Content-Type': 'application/json' },
-        onload: function(res){
-          try {
-            if (res.status >= 200 && res.status < 300 && res.responseText && res.responseText !== 'null') {
-              if (cbtRemoteReadUnchanged('hof',res.responseText)) {
-                _hofPullInFlight=false; if(cb)cb(); return;
-              }
-              var data = JSON.parse(res.responseText) || {};
-              // Parse local stores once, merge all records, then persist once.
-              // Previously each record parsed and potentially rewrote the entire blob.
-              var peaks = data.peaks || {}, localPeaks = hofLoadPeaks(), peaksChanged = false;
-              for (var k in peaks) { if (hofMergePeak(k, peaks[k], localPeaks)) peaksChanged = true; }
-              if (peaksChanged) hofSavePeaks(localPeaks);
-
-              var latest = data.latest || {}, localLatest = hofLoadLatest(), latestChanged = false;
-              for (var lk in latest) { if (hofMergeLatest(lk, latest[lk], localLatest)) latestChanged = true; }
-              if (latestChanged) hofSaveLatest(localLatest);
-
-              /* remote totals = every device except this one */
-              var devId = MY_DEVICE_ID || getDeviceId();
-              var devices = (data.totals && data.totals.devices) || {};
-              var remote = {};
-              for (var d in devices) {
-                if (d === devId) continue;
-                var slice = devices[d] || {};
-                for (var a in slice) {
-                  var r = slice[a] || {};
-                  var normalized=hofKey(r.assoc || a); if (!normalized) continue;
-                  remote[normalized]=cbtMergeHofTotals(remote[normalized],r,false);
-                }
-              }
-              hofSaveRemoteTotals(remote);
-              if (activeTab === 'hof') renderHallOfFame();
-              cbtRememberRemoteRead('hof',res.responseText);
-            }
-          } catch(e) {}
-          _hofPullInFlight = false;
-          if (cb) cb();
-        },
-        onerror: function(){ _hofPullInFlight = false; if (cb) cb(); }
-      });
-    } catch(e) { _hofPullInFlight = false; if (cb) cb(); }
-  }
 
   /* Called for every completed batch. Totals always advance; the peak only
      moves when the batch is substantial enough to be a real record. */
-  function cbtNormalizeHofTotals(totals) {
-    var clean={};
-    Object.keys(totals || {}).forEach(function(key){
-      var row=totals[key], normalized=hofKey(row && row.assoc || key);
-      if (normalized) clean[normalized]=cbtMergeHofTotals(clean[normalized],row,true);
-    });
-    cbtReconcileEventOwners(clean);
-    Object.keys(clean).forEach(function(key){ clean[key].pkgs=clean[key].totalPkgs; });
-    return clean;
-  }
-  function cbtMergeHofTotals(target,source,aliases) {
-    function adapt(row) {
-      row=Object.assign({},row || {});
-      row.totalPkgs=cbtNonnegative(row.pkgs == null ? row.totalPkgs : row.pkgs);
-      return row;
-    }
-    var result=cbtMergePerformance(adapt(target),adapt(source),!!aliases);
-    result.pkgs=result.totalPkgs;
-    return result;
-  }
-  function hofRecordBatch(assoc, pkgs, elapsedSec, rate, completion) {
-    if (!assoc) return;
-    var key = hofKey(assoc);
-    if (!key) return;
-
-    var own = hofLoadOwnTotals();
-    if (completion && completion.id) {
-      var previous=own[key] && own[key]._cbtEvents && own[key]._cbtEvents[completion.id];
-      var completedEvent={pkgs:Number(pkgs),sec:Number(elapsedSec),at:Number(completion.at),revision:Number(completion.revision)};
-      if (previous && cbtCompareCompletion(completedEvent,previous)<=0) return;
-      var addition={assoc:assoc,_cbtEvents:{},_cbtLegacy:{}};
-      addition._cbtEvents[completion.id]=completedEvent;
-      own[key]=cbtMergeHofTotals(own[key],addition,false);
-    } else {
-      // Compatibility for callers without a source batch identity.
-      var legacy=own[key] ? cbtPerformanceLegacy(Object.assign({},own[key],{totalPkgs:own[key].pkgs})) : {};
-      legacy.runs=cbtNonnegative(legacy.runs)+1; legacy.totalPkgs=cbtNonnegative(legacy.totalPkgs)+cbtNonnegative(pkgs);
-      own[key]=cbtMergeHofTotals(Object.assign({},own[key],{_cbtLegacy:legacy}),{assoc:assoc,_cbtLegacy:{}},false);
-    }
-    hofSaveOwnTotals(own);
-    hofPushTotals();
-
-    /* Latest records EVERY valid completed rate, regardless of whether it is
-       higher/lower than Peak or whether the batch meets Fastest thresholds. */
-    var latestTs = completion && Number(completion.at) || Date.now();
-    if (Number(rate) > 0 && isFinite(Number(rate)) && Number(rate) <= CBT_MAX_VALID_RATE) {
-      hofPushLatest(key, assoc, Number(rate), latestTs, pkgs, elapsedSec);
-    }
-
-    if ((pkgs || 0) < HOF_MIN_PKGS) return;          /* too few packages for Peak only */
-    if ((elapsedSec || 0) < HOF_MIN_SEC) return;     /* too short */
-    if (!(rate > 0) || rate > HOF_MAX_RATE) return;  /* missing or impossible */
-    var peaks = hofLoadPeaks();
-    var cur = peaks[key];
-    if (cur && typeof cur.rate === 'number' && cur.rate >= rate) return;  /* never decreases */
-    hofPushPeak(key, assoc, rate, latestTs, pkgs, elapsedSec);
-    if (activeTab === 'hof') renderHallOfFame();
-  }
-
-  function hofWhen(ts) {
-    if (!ts) return '\u2014';
-    try {
-      var d = new Date(ts);
-      if (isNaN(d.getTime())) return '\u2014';
-      /* short date only, e.g. 08/06/26 */
-      return d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: '2-digit' });
-    } catch(e) { return '\u2014'; }
-  }
-
-  function renderHallOfFame() {
-    var tbody = document.getElementById('cbt-hof-tbody');
-    if (!tbody) return;
-    var emptyEl = document.getElementById('cbt-hof-empty');
-    var noteEl  = document.getElementById('cbt-hof-note');
-
-    var peaks   = hofLoadPeaks();
-    var latest  = hofLoadLatest();
-    var own     = hofLoadOwnTotals();
-    var remote  = hofLoadRemoteTotals();
-
-    /* Fastest is no longer Peak-only. Keep Peak as the ranking metric, while
-       also admitting associates who have a Latest rate but have not yet met
-       the Peak qualification threshold. Those rows remain unranked (—). */
-    var mergedTotals={};
-    Object.keys(own).concat(Object.keys(remote)).forEach(function(key){ if (!mergedTotals[key]) mergedTotals[key]=cbtMergeHofTotals(own[key],remote[key],false); });
-    mergedTotals=cbtNormalizeHofTotals(mergedTotals);
-    var allKeys = Object.create(null);
-    for (var pk in peaks) allKeys[pk] = true;
-    for (var lk0 in latest) allKeys[lk0] = true;
-
-    var rows = [];
-    for (var k in allKeys) {
-      var p = peaks[k] || null;
-      var l = latest[k] || null;
-      var o = own[k] || {}, r = remote[k] || {}, combined = mergedTotals[k] || cbtMergeHofTotals(o,r,false);
-      var peakRate =
-        p && Number(p.schema) === HOF_SCHEMA &&
-        Number(p.rate) > 0 && Number(p.rate) <= CBT_MAX_VALID_RATE &&
-        Number(p.pkgs) >= HOF_MIN_PKGS && Number(p.elapsedSec) >= HOF_MIN_SEC
-          ? Number(p.rate) : null;
-      var latestRate =
-        l && Number(l.schema) === HOF_SCHEMA &&
-        Number(l.rate) > 0 && Number(l.rate) <= CBT_MAX_VALID_RATE &&
-        Number(l.pkgs) > 0 && Number(l.elapsedSec) >= 30
-          ? Number(l.rate) : null;
-      if (!(peakRate > 0)) continue;
-
-      rows.push({
-        key: k,
-        assoc: (p && p.assoc) || (l && l.assoc) || o.assoc || r.assoc || k,
-        rate: peakRate,
-        at: p && p.at ? p.at : null,
-        latestRate: latestRate,
-        latestAt: l && l.at ? l.at : null,
-        runs: combined.runs,
-        pkgs: combined.pkgs
-      });
-    }
-
-    /* Only qualifying peaks enter the ranked Fastest board. */
-    rows.sort(function(a, b){
-      var ap = Number(a.rate) > 0, bp = Number(b.rate) > 0;
-      if (ap && !bp) return -1;
-      if (!ap && bp) return 1;
-      if (ap && bp) {
-        if (b.rate !== a.rate) return b.rate - a.rate;
-        if (b.pkgs !== a.pkgs) return b.pkgs - a.pkgs;
-      } else {
-        var ad = Number(a.latestAt) || 0, bd = Number(b.latestAt) || 0;
-        if (bd !== ad) return bd - ad;
-      }
-      return a.assoc.toLowerCase().localeCompare(b.assoc.toLowerCase());
-    });
-    /* Rank is stamped from the FULL ordering before any filtering, so a
-       searched associate keeps the position they actually hold on the board
-       rather than being renumbered 1, 2, 3 within the results. */
-    var peakRank = 0;
-    for (var ri = 0; ri < rows.length; ri++) {
-      rows[ri].rank = Number(rows[ri].rate) > 0 ? (++peakRank) : null;
-    }
-    var hofTerm = (hofSearchTerm || '').toLowerCase().trim();
-    if (hofTerm) {
-      /* Search only the qualifying ranked board; retain full-board ranks. */
-      rows = rows.filter(function(x){
-        return (x.assoc || '').toLowerCase().indexOf(hofTerm) !== -1;
-      });
-      rows = prioritizeNameMatches(rows, hofTerm, function(x){ return x.assoc; });
-    }
-    rows = rows.slice(0, HOF_TOP);
-
-    if (!rows.length) {
-      setHTML(tbody, '');
-      if (emptyEl) {
-        emptyEl.style.display = 'block';
-        emptyEl.textContent = hofTerm
-          ? ('No records match "' + hofSearchTerm + '"')
-          : 'No records yet.';
-      }
-      if (noteEl) noteEl.textContent = '';
-      requestUnifiedSearchCount();
-      return;
-    }
-    if (emptyEl) emptyEl.style.display = 'none';
-
-    var html = '';
-    for (var i = 0; i < rows.length; i++) {
-      var e = rows[i];
-      var rk = (typeof e.rank === 'number') ? e.rank : null;   /* null = no peak yet */
-      var rankTxt = rk ? rk : '\u2013';
-      var rankCls = rk === 1 ? 'gold' : rk === 2 ? 'silver' : rk === 3 ? 'bronze' : '';
-      var rowCls  = (rk && rk <= 3) ? (' class="cbt-hof-' + rk + '"') : '';
-      html += '<tr' + rowCls + '>' +
-        '<td><span class="cbt-cw"><span class="cbt-cw-top">' +
-          '<span class="cbt-rank ' + rankCls + '" style="font-size:' + Math.min(16,22 / (String(rankTxt).length * .64)).toFixed(2) + 'px">' + rankTxt + '</span><span class="cbt-assoc" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) +
-          '</span></span></span></td>' +
-        '<td><span class="cbt-hist-meta">' + e.runs + '</span></td>' +
-        '<td><span class="cbt-hist-meta">' + e.pkgs + '</span></td>' +
-        '<td>' + (typeof e.rate === 'number'
-          ? ('<span class="cbt-hof-peak">' + e.rate.toFixed(1) + '</span>')
-          : '<span class="cbt-hist-meta">\u2014</span>') + '</td>' +
-        '<td>' + (Number(e.latestRate) > 0
-          ? ('<span class="cbt-hist-rate ' +
-              (Number(e.latestRate)>=WARN_RATE?'good':Number(e.latestRate)>=ALERT_RATE?'warn':'alert') +
-              '">' + Number(e.latestRate).toFixed(1) + '</span>')
-          : '<span class="cbt-hist-meta">\u2014</span>') + '</td>' +
-      '</tr>';
-    }
-    setHTML(tbody, html);
-    requestUnifiedSearchCount();
-  }
 
   /* ══════════════════════════════════════
      COPY TO CLIPBOARD + VISUAL CONFIRMATION
@@ -6215,147 +4431,8 @@
 
   // Skip innerHTML assignment when markup is unchanged — avoids DOM thrash on
   // the 2s poll cycle and preserves user text selection mid-read.
-  function setHTML(el, html) {
-    if (el && el._cbtLastHTML !== html) { el._cbtLastHTML = html; el.innerHTML = html; }
-  }
-
-  function cbtObservedProgressRate(data, nowMs) {
-    if (!data || data.shortClientRef == null) return null;
-
-    var ref = String(data.shortClientRef);
-    var generation = cbtTaskGeneration(data);
-    var pkgs = Number(data.packagesBatched);
-    if (!isFinite(pkgs) || pkgs < 0) return null;
-
-    nowMs = Number(nowMs) || cbtNowMs();
-    var cur = _cbtObservedProgressByRef[ref];
-
-    /* New job / first observation / counter reset: establish a baseline.
-       IMPORTANT: packages already present at this moment are NOT credited to
-       the future observation window. */
-    if (!cur || (generation && cur.generation && generation !== cur.generation) ||
-        pkgs < cur.lastPkgs) {
-      cur = _cbtObservedProgressByRef[ref] = {
-        generation: generation,
-        basePkgs: pkgs,
-        baseAt: nowMs,
-        lastPkgs: pkgs,
-        lastAt: nowMs
-      };
-      return null;
-    }
-
-    if (!cur.generation && generation) cur.generation = generation;
-
-    if (pkgs > cur.lastPkgs) {
-      cur.lastPkgs = pkgs;
-      cur.lastAt = nowMs;
-    }
-
-    var elapsedMs = nowMs - cur.baseAt;
-    var deltaPkgs = pkgs - cur.basePkgs;
-    if (elapsedMs < CBT_OBS_RATE_MIN_WINDOW_MS || deltaPkgs <= 0) return null;
-
-    var rate = deltaPkgs / (elapsedMs / 60000);
-    if (!(rate > 0) || !isFinite(rate) || rate > CBT_MAX_VALID_RATE) return null;
-    return rate;
-  }
 
   var _cbtCurrentAttempts = new Map();
-  function cbtComputeLiveRow(data) {
-    var row=computeRow(data), now=cbtNowMs();
-    var key=String(STORE_ID)+'|'+String(data.jobId || data.id || data.shortClientRef || '');
-    var owner=String(data.associateId || data.associate || data.driverAssignment || '').trim().toLowerCase();
-    var generation=cbtTaskGeneration(data), start=null, count=Number(data.packagesBatched);
-    var ops=Array.isArray(data.operationDetails)?data.operationDetails:[];
-    ops.forEach(function(op){
-      if(!op || String(op.name || '').toUpperCase()!=='BATCHING')return;
-      var state=String(op.state || op.operationState || '').toUpperCase();
-      if(cbtNormalizeEpochMs(op.end) || /^(COMPLETED|COMPLETE|FINISHED|DONE)$/.test(state))return;
-      var time=cbtNormalizeEpochMs(op.start);
-      if(time && time<=now && now-time<=CBT_MAX_LIVE_AGE_MS && (!start || time>start))start=time;
-    });
-    var prior=_cbtCurrentAttempts.get(key), changedOwner=prior && owner && prior.owner && owner!==prior.owner;
-    var newJob=prior && generation && prior.generation && generation!==prior.generation &&
-      !(String(generation).indexOf('batch:')===0 && String(prior.generation).indexOf('batch:')===0);
-    var newAttempt=prior && start && prior.apiStart && start!==prior.apiStart;
-    if(!prior || newJob || newAttempt || changedOwner || (isFinite(count) && count<prior.lastPkgs)) {
-      // A reassignment timestamp is not supplied by this API. Never claim the
-      // previous owner's start as the new owner's time; label observation time.
-      prior={owner:owner,generation:generation,apiStart:start,ms:changedOwner&&!newJob&&!newAttempt?now:start,
-        observed:!!(changedOwner&&!newJob&&!newAttempt),baseAt:now,basePkgs:count,lastPkgs:count};
-      _cbtCurrentAttempts.set(key,prior);
-    } else {
-      if(!prior.owner && owner)prior.owner=owner;
-      if(!prior.ms && start){prior.ms=start;prior.apiStart=start;}
-      if(isFinite(count))prior.lastPkgs=count;
-    }
-    row.taskStartMs=row.startMs;row.taskElapsedSec=row.elapsedSec;
-    row.startMs=prior.ms;row.elapsedSec=prior.ms?Math.max(0,(now-prior.ms)/1000):null;
-    row.timeTitle=prior.observed?'Time since this dashboard observed reassignment; actual assignment time unavailable':
-      prior.ms?'Time since current BATCHING attempt started; exact associate assignment time is not supplied':'Current attempt start unavailable';
-    var sameSpan=!prior.observed && prior.ms && row.taskStartMs && Math.abs(prior.ms-row.taskStartMs)<1000;
-    if(!sameSpan) {
-      var minutes=(now-prior.baseAt)/60000,delta=count-prior.basePkgs;
-      var rate=minutes>=1 && delta>0?delta/minutes:null;
-      row.scanRate=rate && isFinite(rate) && rate<=CBT_MAX_VALID_RATE?rate:null;
-      row.rateSource=row.scanRate!==null?'observed-delta':'pending';
-    }
-    return row;
-  }
-
-  function computeRow(data, forceFinished) {
-    var inProg = forceFinished ? false : cbtIsLiveBatch(data);
-    var info = cbtBatchingOpInfo(data, inProg);
-    if (!info && !inProg) info = cbtBatchingOpInfo(data, false);
-
-    var startMs = cbtStableLiveStartMs(data, inProg);
-    var endMs = info && info.endMs ? info.endMs : null;
-    var batchedN = Number(data.packagesBatched) || 0;
-    var nowMs = cbtNowMs();
-
-    /* Active batches always advance from the same monotonic/server-calibrated
-       clock. For a completed batch, the latest BATCHING end is used. */
-    var clockMs = (!inProg && endMs && startMs && endMs >= startMs) ? endMs : nowMs;
-    var elapsedSec = startMs ? Math.max(0, (clockMs - startMs) / 1000) : null;
-
-    var fullRate = (batchedN > 0 && elapsedSec > 30)
-      ? batchedN / (elapsedSec / 60)
-      : null;
-
-    var scanRate = null;
-    var rateSource = 'pending';
-
-    /* Trust the API full-span calculation only when it is physically plausible
-       under the dashboard's existing <=20 bags/min validity ceiling. */
-    if (fullRate != null && isFinite(fullRate) && fullRate > 0 &&
-        fullRate <= CBT_MAX_VALID_RATE) {
-      scanRate = fullRate;
-      rateSource = 'api-full-span';
-    } else if (inProg) {
-      /* If API timing is incomplete or mismatched, estimate from only the
-         package INCREASE actually observed while this page has been watching.
-         This prevents "35 existing packages / 30 seconds" fake spikes. */
-      var observedRate = cbtObservedProgressRate(data, nowMs);
-      if (observedRate != null) {
-        scanRate = observedRate;
-        rateSource = 'observed-delta';
-      } else if (fullRate != null && fullRate > CBT_MAX_VALID_RATE) {
-        rateSource = 'invalid-api-span';
-      }
-    } else if (fullRate != null && fullRate > CBT_MAX_VALID_RATE) {
-      rateSource = 'invalid-api-span';
-    }
-
-    return {
-      startMs: startMs,
-      elapsedSec: elapsedSec,
-      scanRate: scanRate,
-      fullRate: fullRate,
-      rateSource: rateSource,
-      inProgress: inProg
-    };
-  }
 
   function ensureActiveAssociateInToday(data) {
     if (!data || !cbtIsLiveBatch(data)) return false;
@@ -6424,7 +4501,6 @@
     captureName(data);
     if (weekly) { weekly[day]=history;saveWeekly(weekly); }
     else saveHistory(history);
-    try { hofRecordBatch(assoc,pkgs,elapsedSec,rate,{id:id,at:info.endMs,revision:event.revision}); } catch(e) {}
     cbtScheduleReportRefresh();
     return true;
   }
@@ -6747,15 +4823,14 @@
   function buildPanel() {
     var panel2 = document.createElement('div');
     panel2.id = 'cbt-panel';
+    panel2.classList.add('dark'); // Fixed screenshot theme; no theme toggle.
     panel2.innerHTML =
       '<div id="cbt-header">' +
         '<span id="cbt-title">Batcher Timers</span>' +
         '<div id="cbt-controls">' +
-          '<span id="cbt-theme-btn" title="Toggle Dark/Light">🌙</span>' +
           '<button type="button" id="cbt-afa-btn" title="Open cart actions" aria-haspopup="dialog" aria-expanded="false" aria-controls="cbt-afa-overlay">' +
             '<span class="cbt-afa-lbl">▶ Run</span>' +
           '</button>' +
-          '<span id="cbt-collapse-btn" title="Collapse/Expand">▲</span>' +
         '</div>' +
       '</div>' +
       '<div id="cbt-stats-bar">' +
@@ -6784,75 +4859,7 @@
           '<div class="cbt-stat-label">Remaining</div>' +
           '<div class="cbt-stat-value" id="cbt-stat-rem">\u2014</div>' +
         '</div>' +
-      '</div>' +
-      '<div id="cbt-tabs">' +
-        '<span class="cbt-tab active" data-tab="live">Live</span>' +
-        '<span class="cbt-tab" data-tab="history">Today</span>' +
-        '<span class="cbt-tab" data-tab="weekly">Weekly</span>' +
-        '<span class="cbt-tab" data-tab="hof" title="All fastest batchers with recorded data">Fastest</span>' +
-        '<span class="cbt-tab" data-tab="names">Names</span>' +
-      '</div>' +
-      '<div id="cbt-unified-search">' +
-        '<div id="cbt-unified-search-box">' +
-          '<input id="cbt-unified-search-input" type="text" autocomplete="off" spellcheck="false" placeholder="Find associate by name..."/>' +
-          '<span id="cbt-unified-search-count"></span>' +
-          '<button id="cbt-unified-search-clear" type="button" title="Clear search">✕</button>' +
-        '</div>' +
-      '</div>' +
-      '<div id="cbt-body">' +
-        '<div id="cbt-live-view">' +
-          '<table id="cbt-table" style="table-layout:fixed;width:100%;"><thead><tr>' +
-            '<th class="cbt-sortable-live" data-sort="assoc" style="width:40%;text-align:left;">Associate</th>' +
-            '<th class="cbt-sortable-live" data-sort="elapsed" style="width:30%;text-align:center;">Elapsed</th>' +
-            '<th class="cbt-sortable-live" data-sort="rate" style="width:30%;text-align:center;">Bags/min \u25BC</th>' +
-          '</tr></thead><tbody id="cbt-tbody"></tbody></table>' +
-          '<div id="cbt-empty">Loading live data…</div>' +
-          '<div id="cbt-live-results"></div>' +
-        '</div>' +
-        '<div id="cbt-history-view" style="display:none">' +
-          '<div id="cbt-hist-summary"></div>' +
-          '<table id="cbt-hist-table"><thead><tr>' +
-            '<th class="cbt-sortable-hist" data-sort="assoc">Associate</th>' +
-            '<th class="cbt-sortable-hist" data-sort="runs">Batch</th>' +
-            '<th class="cbt-sortable-hist" data-sort="pkgs">Pkgs</th>' +
-            '<th class="cbt-sortable-hist" data-sort="bestRate">Best \u25BC</th>' +
-            '<th class="cbt-sortable-hist" data-sort="lastRate">Latest Avg</th>' +
-          '</tr></thead><tbody id="cbt-hist-tbody"></tbody></table>' +
-          '<div id="cbt-hist-empty">No history yet today</div>' +
-          '<div id="cbt-hist-cross"></div>' +
-        '</div>' +
-        '<div id="cbt-weekly-view" style="display:none">' +
-          '<div id="cbt-weekly-summary"></div>' +
-          '<table id="cbt-weekly-table"><thead><tr>' +
-            '<th class="cbt-sortable" data-sort="assoc">Associate</th>' +
-            '<th class="cbt-sortable" data-sort="runs">Batch</th>' +
-            '<th class="cbt-sortable" data-sort="pkgs">Pkgs</th>' +
-            '<th class="cbt-sortable" data-sort="bestRate">Best \u25BC</th>' +
-            '<th class="cbt-sortable" data-sort="lastRate">Last Avg</th>' +
-            '<th class="cbt-sortable" data-sort="hrs">Hrs</th>' +
-          '</tr></thead><tbody id="cbt-weekly-tbody"></tbody></table>' +
-          '<div id="cbt-weekly-empty">No weekly data yet</div>' +
-          '<div id="cbt-weekly-cross"></div>' +
-        '</div>' +
-        '<div id="cbt-names-view" style="display:none">' +
-          '<div id="cbt-names-count" style="text-align:center;font-size:12px;color:#5a7a96;padding:2px 0 4px;font-weight:600;"></div>' +
-          '<table id="cbt-names-table"><thead><tr>' +
-            '<th style="text-align:left;">Associate</th>' +
-          '</tr></thead><tbody id="cbt-names-tbody"></tbody></table>' +
-          '<div id="cbt-names-empty" style="display:none;text-align:center;color:#aaa;padding:9px 0;font-size:13px;font-style:italic;line-height:1.2;">No names saved yet</div>' +
-        '</div>' +
-        '<div id="cbt-hof-view" style="display:none">' +
-          '<table id="cbt-hof-table"><thead><tr>' +
-            '<th>#\u2003Name</th>' +
-            '<th>Batch</th>' +
-            '<th>Pkgs</th>' +
-            '<th>Peak</th>' +
-            '<th>Last Avg</th>' +
-          '</tr></thead><tbody id="cbt-hof-tbody"></tbody></table>' +
-          '<div id="cbt-hof-empty"></div>' +
-        '</div>' +
-      '</div>' +
-      '<div id="cbt-drag-bottom" title="Drag to resize"></div>';
+      '</div>' ;
     return panel2;
   }
 
@@ -6991,47 +4998,11 @@
     _panel2Ref.style.width = '';
     _panel2Ref.style.zIndex = '';
 
-    try {
-      var savedH = localStorage.getItem('cbt_body_h');
-      var collapsed0 = localStorage.getItem('cbt_panel_collapsed') === '1';
-      var body0  = _panel2Ref.querySelector('#cbt-body');
-      var tabs0  = _panel2Ref.querySelector('#cbt-tabs');
-      var search0 = _panel2Ref.querySelector('#cbt-unified-search');
-      var drag0 = _panel2Ref.querySelector('#cbt-drag-bottom');
-      var collapse0 = _panel2Ref.querySelector('#cbt-collapse-btn');
-      if (savedH && body0) {
-        var h0 = parseFloat(savedH);
-        body0.style.height    = h0 + 'px';
-        body0.style.maxHeight = h0 + 'px';
-      }
-      if (collapsed0) {
-        if (body0) { body0.style.display = 'none'; body0.style.minHeight = '0'; }
-        if (tabs0) tabs0.style.display = 'none';
-        if (search0) search0.style.display = 'none';
-        if (drag0) drag0.style.display = 'none';
-        if (collapse0) collapse0.textContent = '▼';
-      } else {
-        if (body0) { body0.style.display = ''; if (!body0.style.minHeight || body0.style.minHeight === '0px') body0.style.minHeight = (parseFloat(savedH) || 350) + 'px'; }
-        if (tabs0) tabs0.style.display = '';
-        if (search0) search0.style.display = '';
-        if (drag0) drag0.style.display = '';
-        if (collapse0) collapse0.textContent = '▲';
-      }
-    } catch(ex) {}
-
     mount.el.parentNode.insertBefore(_panel2Ref, mount.el);
 
     _mountFails = 0;              /* mounted successfully */
     try { applyUiScale(); } catch(ex) {}   /* restore the saved size */
 
-    /* Only render the tab the user can actually see. Hidden tabs keep their
-       data in storage/cache and render normally the moment the user clicks
-       them. This removes a large burst of unnecessary DOM creation at startup. */
-    try { renderActiveSearchTab(); } catch(ex) { try { renderLive(); } catch(ex2) {} }
-
-    /* If the backend answered during the short mount window, make sure the
-       freshly mounted Live table receives that cached data immediately. */
-    if (activeTab === 'live' && taskCache.size) requestLiveRender();
     // Returning to the dashboard refreshes stats promptly after off-page polling pauses.
     if(_cbtStatsCurrent && _cbtStatsCurrent.store===STORE_ID)updateStats.apply(null,_cbtStatsCurrent.args);
     fetchAndUpdate();
@@ -7060,74 +5031,12 @@
   }
 
   /* Same idea for the Associate Search panel on task detail pages. */
-  function taskPanelHealthCheck() {
-    var onTaskPage = shouldShowSearchPanel();
-    var tp = document.getElementById('cbt-tp');
-    if (onTaskPage) {
-      if (!tp || !tp.isConnected) injectTaskPanel();
-    } else if (tp) {
-      tp.remove();
-    }
-  }
-
-  function setDashboardSearchTerm(value) {
-    dashboardSearchTerm = value == null ? '' : String(value);
-    liveSearchTerm = dashboardSearchTerm;
-    historySearchTerm = dashboardSearchTerm;
-    weeklySearchTerm = dashboardSearchTerm;
-    namesSearchTerm = dashboardSearchTerm;
-    hofSearchTerm = dashboardSearchTerm;
-  }
+  function taskPanelHealthCheck() { /* Lightweight edition: no lower dashboard view. */ }
 
   /* Name-only search: exact match first, then prefix matches, then contains.
      Rank badges are stamped before filtering and are never renumbered here. */
-  function prioritizeNameMatches(list, term, getName) {
-    term = (term || '').toLowerCase().trim();
-    if (!term || !Array.isArray(list) || list.length < 2) return list;
-    return list.map(function(item, idx){
-      var name = String(getName(item) || '').toLowerCase();
-      var score = name === term ? 0 : (name.indexOf(term) === 0 ? 1 : 2);
-      return { item:item, idx:idx, score:score };
-    }).sort(function(a,b){ return a.score - b.score || a.idx - b.idx; })
-      .map(function(x){ return x.item; });
-  }
 
   var _unifiedCountTimer = null;
-  function requestUnifiedSearchCount() {
-    clearTimeout(_unifiedCountTimer);
-    _unifiedCountTimer = setTimeout(updateUnifiedSearchCount, 0);
-  }
-
-  function updateUnifiedSearchCount() {
-    var badge = document.getElementById('cbt-unified-search-count');
-    if (!badge) return;
-    var term = (dashboardSearchTerm || '').trim();
-    if (!term) { badge.textContent = ''; badge.style.display = 'none'; return; }
-    var ids = { live:'cbt-live-view', history:'cbt-history-view', weekly:'cbt-weekly-view', hof:'cbt-hof-view', names:'cbt-names-view' };
-    var view = document.getElementById(ids[activeTab] || 'cbt-live-view');
-    if (!view) { badge.textContent = ''; badge.style.display = 'none'; return; }
-    var seen = Object.create(null);
-    var nodes = view.querySelectorAll('.cbt-assoc, .cbt-search-row-name, .cbt-name-cell');
-    for (var i=0; i<nodes.length; i++) {
-      var clone = nodes[i].cloneNode(true);
-      var junk = clone.querySelectorAll('.cbt-rank, .cbt-slow-alert, .cbt-copied-tag');
-      for (var j=0; j<junk.length; j++) junk[j].remove();
-      var name = (clone.textContent || '').trim().toLowerCase();
-      if (name && name !== '—') seen[name] = true;
-    }
-    var count = Object.keys(seen).length;
-    badge.textContent = count + ' found';
-    badge.style.display = 'block';
-  }
-
-  function renderActiveSearchTab() {
-    if (activeTab === 'live') { renderLive(); renderLiveSearch(dashboardSearchTerm); }
-    else if (activeTab === 'history') renderHistory();
-    else if (activeTab === 'weekly') renderWeekly();
-    else if (activeTab === 'names') renderNames();
-    else if (activeTab === 'hof') renderHallOfFame();
-    requestUnifiedSearchCount();
-  }
 
   function cbtHandleRunClick(e) {
     if (e) { e.preventDefault(); e.stopPropagation(); }
@@ -7153,578 +5062,20 @@
     }
   }
   function attachPanelEvents(panel2) {
-    var unifiedSearch = panel2.querySelector('#cbt-unified-search-input');
-    if (unifiedSearch) unifiedSearch.value = dashboardSearchTerm;
-    panel2.querySelectorAll('.cbt-tab').forEach(function(tab) {
-      tab.addEventListener('click', function() {
-        panel2.querySelectorAll('.cbt-tab').forEach(function(t){t.classList.remove('active');});
-        tab.classList.add('active');
-        activeTab = tab.dataset.tab;
-        /* Keep the same associate query while switching tabs. */
-        setDashboardSearchTerm(dashboardSearchTerm);
-        document.getElementById('cbt-live-view').style.display    = activeTab==='live'    ? '' : 'none';
-        document.getElementById('cbt-history-view').style.display = activeTab==='history' ? '' : 'none';
-        document.getElementById('cbt-weekly-view').style.display  = activeTab==='weekly'  ? '' : 'none';
-        document.getElementById('cbt-names-view').style.display   = activeTab==='names'   ? '' : 'none';
-        var hofView = document.getElementById('cbt-hof-view');
-        if (hofView) hofView.style.display = activeTab==='hof' ? '' : 'none';
-        if (activeTab==='hof') { try { hofPull(); } catch(e) {} }
-        renderActiveSearchTab();
-
-        /* A new computer should never sit on an empty Weekly/Today view while
-           waiting for the 10-second background sync. Render cache instantly,
-           then refresh shared Firebase data in the background. */
-        if (activeTab === 'weekly' && (Date.now() - _lastWeeklyPullAt > 2500)) {
-          try { syncWeeklyPull(); } catch(e2) {}
-        } else if (activeTab === 'history' && (Date.now() - _lastHistoryPullAt > 2500)) {
-          try { syncHistoryPull(); } catch(e3) {}
-        }
-      });
-    });
-
     var afaBtn = panel2.querySelector('#cbt-afa-btn');
     if (afaBtn) afaBtn.addEventListener('click',cbtHandleRunClick);
-
-    /* v23.9.84: restore the original VERTICAL dashboard length.
-       Width stays exactly as before. The compact 240px default from older
-       versions is migrated back to 350px once. If someone manually made the
-       board taller than 350px, keep that larger custom height. */
-    try {
-      var restoreHeightKey = 'cbt_body_h_restore_v23944';
-      if (!localStorage.getItem(restoreHeightKey)) {
-        var savedBodyH = parseFloat(localStorage.getItem('cbt_body_h') || '350');
-        if (!isFinite(savedBodyH) || savedBodyH <= 350) {
-          localStorage.setItem('cbt_body_h', '350');
-        }
-        localStorage.setItem(restoreHeightKey, '1');
-      }
-    } catch(eRestore) {}
-
-    /* v23.9.84: persist the dashboard's collapsed/open state across reloads. */
-    var isCollapsed = false;
-    try { isCollapsed = localStorage.getItem('cbt_panel_collapsed') === '1'; } catch(eCollapsedLoad) {}
-    var collapseBtn = panel2.querySelector('#cbt-collapse-btn');
-
-    function applyMainCollapseState() {
-      var body = panel2.querySelector('#cbt-body');
-      var tabs = panel2.querySelector('#cbt-tabs');
-      var searchBar = panel2.querySelector('#cbt-unified-search');
-      var drag = panel2.querySelector('#cbt-drag-bottom');
-      var savedH = parseFloat(localStorage.getItem('cbt_body_h') || '350');
-      if (!isFinite(savedH) || savedH < 350) savedH = 350;
-
-      if (isCollapsed) {
-        if (body) { body.style.display = 'none'; body.style.minHeight = '0'; }
-        if (tabs) tabs.style.display = 'none';
-        if (searchBar) searchBar.style.display = 'none';
-        if (drag) drag.style.display = 'none';
-        if (collapseBtn) collapseBtn.textContent = '▼';
-      } else {
-        if (body) {
-          body.style.display = '';
-          body.style.height = savedH + 'px';
-          body.style.maxHeight = savedH + 'px';
-          body.style.minHeight = savedH + 'px';
-        }
-        if (tabs) tabs.style.display = '';
-        if (searchBar) searchBar.style.display = '';
-        if (drag) drag.style.display = '';
-        if (collapseBtn) collapseBtn.textContent = '▲';
-      }
-    }
-
-    applyMainCollapseState();
-
-    collapseBtn.addEventListener('click', function() {
-      var savedH = parseFloat(localStorage.getItem('cbt_body_h') || '350');
-
-      if (isCollapsed) {
-        isCollapsed = false;
-        try { localStorage.setItem('cbt_panel_collapsed', '0'); } catch(ex) {}
-        applyMainCollapseState();
-      } else if (savedH > 350) {
-        /* Preserve the existing first-click behavior for a manually enlarged
-           board: shrink it to the normal 350px height before fully collapsing. */
-        try { localStorage.setItem('cbt_body_h', '350'); } catch(ex) {}
-        applyMainCollapseState();
-      } else {
-        isCollapsed = true;
-        try { localStorage.setItem('cbt_panel_collapsed', '1'); } catch(ex) {}
-        applyMainCollapseState();
-      }
-    });
-
-    var isDark = localStorage.getItem('cbt_dark') !== 'false';
-    var themeBtn = panel2.querySelector('#cbt-theme-btn');
-    function applyTheme() {
-      if (isDark) { panel2.classList.add('dark'); themeBtn.textContent = '☀️'; }
-      else { panel2.classList.remove('dark'); themeBtn.textContent = '🌙'; }
-    }
-    applyTheme();
-    themeBtn.addEventListener('click', function() {
-      isDark = !isDark;
-      try { localStorage.setItem('cbt_dark', isDark); } catch(e) {}
-      applyTheme();
-      try { applyPopupTheme(); } catch(e) {}
-    });
-
     applyUiScale();
-    var dragStartY = 0, dragStartH = 350, dragContentH = 350, resizedH = null;
-    var resizeBody = null, resizeTabs = null, resizeSearch = null;
-    panel2._cbtStopResize = cbtBindMouseDrag(panel2.querySelector('#cbt-drag-bottom'), function(e) {
-      dragStartY = e.clientY;
-      resizeBody = panel2.querySelector('#cbt-body');
-      if (!resizeBody) return false;
-      dragStartH = resizeBody.offsetHeight || 350;
-      dragContentH = resizeBody.scrollHeight || 9999;
-      resizeTabs = panel2.querySelector('#cbt-tabs');
-      resizeSearch = panel2.querySelector('#cbt-unified-search');
-      resizedH = null;
-      e.stopPropagation();
-    }, function(e) {
-      var newH = Math.min(dragContentH, Math.max(350, dragStartH + (e.clientY - dragStartY) / (HEADER_FIXED_SCALE * _uiScale)));
-      if (newH === resizedH) return;
-      resizedH = newH;
-      resizeBody.style.height = newH + 'px';
-      resizeBody.style.maxHeight = newH + 'px';
-      resizeBody.style.minHeight = newH + 'px';
-      if (resizeTabs) resizeTabs.style.display = '';
-      if (resizeSearch) resizeSearch.style.display = '';
-    }, function() {
-      if (resizedH !== null) { try { localStorage.setItem('cbt_body_h', resizedH); } catch(ex) {} }
-      resizeBody = resizeTabs = resizeSearch = null;
-    }, function(){ return panel2.isConnected; });
-
-    try {
-      var savedH = localStorage.getItem('cbt_body_h');
-      if (savedH) {
-        var body = panel2.querySelector('#cbt-body');
-        var h = parseFloat(savedH);
-        if (body) { body.style.height = h + 'px'; body.style.maxHeight = h + 'px'; }
-      }
-      /* Height restoration must never override the persisted collapsed state. */
-      applyMainCollapseState();
-    } catch(ex) {}
-
-
-
-    document.addEventListener('click', function(e) {
-      if (e.target.id === 'cbt-unified-search-clear') {
-        var inp = document.getElementById('cbt-unified-search-input');
-        if (inp) inp.value = '';
-        setDashboardSearchTerm('');
-        renderActiveSearchTab();
-        if (inp) inp.focus();
-      }
-
-    });
-
-    document.addEventListener('click', cbtProfileFromEvent);
-    document.addEventListener('keydown', function(e){
-      if ((e.key==='Enter' || e.key===' ') && e.target.matches('.cbt-assoc,.cbt-name-cell,.cbt-search-row-name,.cbt-tp-row-name')) {e.preventDefault();cbtProfileFromEvent(e);}
-    });
-    document.addEventListener('visibilitychange', function(){if(!document.hidden){cbtProfileChanged();}});
-
-    document.addEventListener('input', function(e) {
-      if (e.target.id === 'cbt-unified-search-input') {
-        setDashboardSearchTerm(e.target.value);
-        renderActiveSearchTab();
-      }
-    });
-
-    document.addEventListener('click', function(e) {
-      var th = e.target.closest('.cbt-sortable');
-      if (th && document.getElementById('cbt-weekly-table') && document.getElementById('cbt-weekly-table').contains(th)) {
-        var key=th.dataset.sort;
-        if(weeklySortKey===key){weeklySortAsc=!weeklySortAsc;}else{weeklySortKey=key;weeklySortAsc=false;}
-        renderWeekly();
-      }
-      th = e.target.closest('.cbt-sortable-live');
-      if (th && document.getElementById('cbt-table') && document.getElementById('cbt-table').contains(th)) {
-        var key2=th.dataset.sort;
-        /* liveSortKey starts as 'rate', so without the liveSortUser flag the
-           very first Bags/min click fell into the "same key" branch and
-           sorted ascending instead of descending. */
-        if (liveSortUser && liveSortKey === key2) { liveSortAsc = !liveSortAsc; }
-        else { liveSortKey = key2; liveSortAsc = false; liveSortUser = true; }
-        renderLive();
-      }
-      th = e.target.closest('.cbt-sortable-hist');
-      if (th && document.getElementById('cbt-hist-table') && document.getElementById('cbt-hist-table').contains(th)) {
-        var key3=th.dataset.sort;
-        if(historySortKey===key3){historySortAsc=!historySortAsc;}else{historySortKey=key3;historySortAsc=false;}
-        renderHistory();
-      }
-    });
   }
 
   /* ── Live Search — searches across Today and Weekly ── */
-  function renderLiveSearch(term) {
-    var resultsEl = document.getElementById('cbt-live-results');
-    if (!resultsEl) return;
-    if (!term || term.trim() === '') { resultsEl.innerHTML = ''; requestUnifiedSearchCount(); return; }
-    term = term.toLowerCase().trim();
-    var html = '';
-    var shown = new Set();
-
-    var history = cbtVerifiedToday(), histEntries = Object.values(history).filter(function(e){ return e.assoc && e.assoc.toLowerCase().indexOf(term) !== -1; });
-    histEntries = prioritizeNameMatches(histEntries, term, function(e){ return e.assoc; });
-    if (histEntries.length > 0) {
-      html += '<div class="cbt-search-result-section">TODAY</div>';
-      histEntries.forEach(function(e) {
-        shown.add(e.assoc.toLowerCase());
-        var rateCls = e.avgRate >= WARN_RATE ? 'good' : e.avgRate >= ALERT_RATE ? 'warn' : 'alert';
-        html += '<div class="cbt-search-row"><span class="cbt-search-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span>' +
-        '<span class="cbt-search-row-mid"><span style="display:inline-block;width:45px;text-align:right;">' + e.runs + '</span> runs | <span style="display:inline-block;width:50px;text-align:left;">' + e.totalPkgs + '</span> pkgs</span>' +
-        '<span class="cbt-search-row-rate"><span class="cbt-hist-rate ' + rateCls + '">' + e.avgRate.toFixed(1) + '</span></span></div>';
-      });
-    }
-
-    var weekly = cbtVerifiedWeek(), agg = {};
-    for (var dk of Object.keys(weekly)) {
-      for (var a of Object.keys(weekly[dk])) {
-        if (a.toLowerCase().indexOf(term) === -1) continue;
-        if (!agg[a]) agg[a] = { assoc:a, totalPkgs:0, totalSec:0, runs:0, daysSet:new Set() };
-        agg[a].totalPkgs += weekly[dk][a].totalPkgs;
-        agg[a].totalSec  += weekly[dk][a].totalSec;
-        agg[a].runs      += weekly[dk][a].runs;
-        agg[a].daysSet.add(dk);
-      }
-    }
-    var weeklyEntries = prioritizeNameMatches(Object.values(agg), term, function(e){ return e.assoc; });
-    if (weeklyEntries.length > 0) {
-      html += '<div class="cbt-search-result-section">WEEKLY</div>';
-      weeklyEntries.forEach(function(e) {
-        shown.add(e.assoc.toLowerCase());
-        var avgRate = e.totalPkgs / (e.totalSec / 60);
-        var rateCls = avgRate >= WARN_RATE ? 'good' : avgRate >= ALERT_RATE ? 'warn' : 'alert';
-        html += '<div class="cbt-search-row"><span class="cbt-search-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span>' +
-        '<span class="cbt-search-row-mid"><span style="display:inline-block;width:45px;text-align:right;">' + e.daysSet.size + '</span> days | <span style="display:inline-block;width:50px;text-align:left;">' + e.totalPkgs + '</span> pkgs</span>' +
-        '<span class="cbt-search-row-rate"><span class="cbt-hist-rate ' + rateCls + '">' + avgRate.toFixed(1) + '</span></span></div>';
-      });
-    }
-
-    html += savedNamesSearchHTML(term, shown);
-
-    if (html === '') html = '<div style="text-align:center;color:#aaa;padding:10px;font-style:italic;font-size:14px;">No results found for "' + term + '"</div>';
-    setHTML(resultsEl, html);
-    requestUnifiedSearchCount();
-  }
 
   /* The arrow was baked into the header markup and never moved. Redraw it
      on whichever column is active, pointing the way the list is ordered. */
   var LIVE_SORT_LABELS = { assoc: 'Associate', elapsed: 'Elapsed', rate: 'Bags/min' };
-  function updateLiveSortHeaders() {
-    var table = document.getElementById('cbt-table');
-    if (!table) return;
-    var ths = table.querySelectorAll('.cbt-sortable-live');
-    for (var i = 0; i < ths.length; i++) {
-      var th = ths[i];
-      var k = th.dataset ? th.dataset.sort : th.getAttribute('data-sort');
-      var base = LIVE_SORT_LABELS[k] ||
-                 (th.textContent || '').replace(/[\u25B2\u25BC]/g, '').trim();
-      var arrow = (k === liveSortKey) ? (liveSortAsc ? ' \u25B2' : ' \u25BC') : '';
-      var next = base + arrow;
-      if (th.textContent !== next) th.textContent = next;
-    }
-  }
-
-  function lockLiveRowGeometry() {
-    var table = document.getElementById('cbt-table');
-    if (table && !table.classList.contains('cbt-live-geometry')) table.classList.add('cbt-live-geometry');
-  }
-
-  function cbtPatchLiveRows(tbody, views) {
-    var rows = tbody.children, parts = [];
-    if (rows.length !== views.length) return false;
-    // Validate before writing. Changed identity/order takes the normal full
-    // render path; ordinary rate/time changes preserve clickable name nodes.
-    for (var i=0;i<views.length;i++) {
-      if (rows[i].getAttribute('data-cbt-live-key') !== views[i].key) return false;
-      var elapsed=rows[i].querySelector('.cbt-elapsed'), rate=rows[i].querySelector('.cbt-rate');
-      var slot=rows[i].querySelector('.cbt-live-status-slot');
-      if (!elapsed || !rate || !slot) return false;
-      parts.push({elapsed:elapsed,rate:rate,slot:slot});
-    }
-    function attr(node,key,value) { value=String(value); if(node.getAttribute(key)!==value)node.setAttribute(key,value); }
-    for (var j=0;j<views.length;j++) {
-      var v=views[j], p=parts[j];
-      attr(p.elapsed,'class','cbt-elapsed '+v.elCls);
-      attr(p.elapsed,'data-start',v.start);
-      attr(p.elapsed,'data-live',v.live);
-      attr(p.elapsed.parentElement,'title',v.timeTitle);
-      if(p.elapsed.textContent!==v.elTxt)p.elapsed.textContent=v.elTxt;
-      attr(p.rate,'class','cbt-rate '+v.rateCls);
-      attr(p.rate,'title',v.rateTitle);
-      if(p.rate.textContent!==v.rateTxt)p.rate.textContent=v.rateTxt;
-      var display=v.slow?'':'none';
-      if(p.slot.style.display!==display)p.slot.style.display=display;
-    }
-    // The DOM now differs from the last full HTML write.
-    tbody._cbtLastHTML=null;
-    return true;
-  }
-
-  function renderLive() {
-    var tbody=document.querySelector('#cbt-tbody'), empty=document.querySelector('#cbt-empty');
-    if (!tbody||!empty) return;
-    var lowerTerm = liveSearchTerm ? liveSearchTerm.toLowerCase() : '';
-    // Compute each row's stats once — previously computeRow ran inside the sort
-    // comparator (O(n log n) calls) and again in the render loop.
-    var rows=[]; taskCache.forEach(function(d){
-      if(cbtIsLiveBatch(d)) {
-        if (lowerTerm) {
-          var name = (d.associateId||d.associate||d.driverAssignment||d.shortClientRef||'').toLowerCase();
-          if (name.indexOf(lowerTerm) === -1) return;
-        }
-        rows.push({ d: d, r: cbtComputeLiveRow(d) });
-      }
-    });
-    var liveAttemptKeys=new Set();taskCache.forEach(function(d){if(cbtIsLiveBatch(d))liveAttemptKeys.add(String(STORE_ID)+'|'+String(d.jobId || d.id || d.shortClientRef || ''));});
-    _cbtCurrentAttempts.forEach(function(v,k){if(!liveAttemptKeys.has(k))_cbtCurrentAttempts.delete(k);});
-    /* While the user is explicitly sorting by Bags/min, the LOW-first
-       grouping is suspended — otherwise LOW rows stayed pinned at the top in
-       their own fixed order and clicking the column appeared to do nothing.
-       Every other time, LOW batchers still float to the top as before. */
-    var groupLowFirst = !(liveSortUser && liveSortKey === 'rate');
-    rows.sort(function(A,B){
-      var a=A.d, b=B.d, ra=A.r, rb=B.r;
-      if (groupLowFirst) {
-        var slowA = ra.scanRate && ra.scanRate < ALERT_RATE && (ra.elapsedSec||0) > 120;
-        var slowB = rb.scanRate && rb.scanRate < ALERT_RATE && (rb.elapsedSec||0) > 120;
-        if (slowA && !slowB) return -1;
-        if (!slowA && slowB) return 1;
-        if (slowA && slowB) return (ra.scanRate||0) - (rb.scanRate||0);
-      }
-      var va, vb;
-      if(liveSortKey==='assoc'){va=(a.associateId||a.associate||'').toLowerCase();vb=(b.associateId||b.associate||'').toLowerCase();return liveSortAsc?va.localeCompare(vb):vb.localeCompare(va);}
-      else if(liveSortKey==='rate'){
-        /* rows with no rate yet always sink to the bottom, whichever
-           direction is active, so they never disturb the ordering */
-        var hasA = (ra.scanRate != null && !isNaN(ra.scanRate));
-        var hasB = (rb.scanRate != null && !isNaN(rb.scanRate));
-        if (hasA && !hasB) return -1;
-        if (!hasA && hasB) return 1;
-        if (!hasA && !hasB) return 0;
-        va = ra.scanRate; vb = rb.scanRate;      /* decimals compare fine */
-      }
-      else{va=ra.elapsedSec||0;vb=rb.elapsedSec||0;}
-      return liveSortAsc?va-vb:vb-va;
-    });
-    updateLiveSortHeaders();
-    if(rows.length===0){tbody._cbtLiveStructure = null;setHTML(tbody,'');empty.style.display='block';
-      empty.textContent = _cbtLiveSnapshotReady ? 'No active batching tasks' : 'Loading live data…';
-      var body2=document.querySelector('#cbt-body');
-      if(body2&&!body2.style.height){body2.style.height='350px';body2.style.maxHeight='350px';}
-      return;}
-
-    empty.style.display='none';
-    var html='', views=[];
-    for(var i=0;i<rows.length;i++){
-      var data=rows[i].d,assoc=data.associateId||data.associate||data.driverAssignment||data.shortClientRef,shortRef=data.shortClientRef,r=rows[i].r;
-      var elMin=r.elapsedSec!=null?r.elapsedSec/60:0;
-      var elCls=r.elapsedSec!=null?(elMin>=ALERT_ELAPSED_MIN?'alert':elMin>=WARN_ELAPSED_MIN?'warn':''):'';
-      var elTxt=r.elapsedSec!=null?fmt(r.elapsedSec):'--:--';
-      var rateCls=r.scanRate!=null?(r.scanRate<ALERT_RATE?'alert':r.scanRate<WARN_RATE?'warn':''):'pending';
-      var rateTxt=r.scanRate!=null?r.scanRate.toFixed(1):'\u2014';
-      var rateTitle =
-        r.rateSource==='api-full-span' ? 'Rate: packages batched / full BATCHING elapsed time' :
-        r.rateSource==='observed-delta' ? 'Rate fallback: package increase observed by this dashboard' :
-        r.rateSource==='invalid-api-span' ? 'Rate hidden: API timing/count combination produced an invalid spike' :
-        'Rate pending until enough trusted timing/progress is available';
-      var slow=!!(r.scanRate!==null&&r.scanRate<ALERT_RATE&&r.elapsedSec>120);
-      var slowAlert='<span class="cbt-live-status-slot"'+(slow?'':' style="display:none"')+'><span class="cbt-slow-alert">⚠ SLOW</span></span>';
-      var rowKey=String(data.jobId || data.id || shortRef || '')+'|'+String(assoc);
-      views.push({key:rowKey,elCls:elCls,elTxt:elTxt,start:r.startMs||'',live:r.inProgress?'1':'0',
-        timeTitle:r.timeTitle||'',rateCls:rateCls,rateTxt:rateTxt,rateTitle:rateTitle,slow:slow});
-      html+='<tr data-cbt-live-key="'+afaEsc(rowKey)+'"><td><span class="cbt-cw"><span class="cbt-cw-top"><span class="cbt-assoc" role="button" tabindex="0" title="Open associate profile">'+afaEsc(assoc)+'</span>'+slowAlert+'</span><span class="cbt-ref">'+afaEsc(shortRef)+'</span></span></td>';
-      html+='<td title="'+afaEsc(r.timeTitle || '')+'"><span class="cbt-elapsed '+elCls+'" data-start="'+(r.startMs||'')+'" data-live="'+(r.inProgress?'1':'0')+'">'+elTxt+'</span></td>';
-      html+='<td><span class="cbt-rate '+rateCls+'" title="'+rateTitle+'">'+rateTxt+'</span></td></tr>';
-    }
-    var structure = html.replace(/(<span class="cbt-elapsed [^"]*" data-start="[^"]*" data-live="[^"]*">)[^<]*(<\/span>)/g, '$1$2');
-    if (tbody._cbtLiveStructure !== structure) {
-      tbody._cbtLiveStructure = structure;
-      if (!cbtPatchLiveRows(tbody,views)) {
-        setHTML(tbody, html);
-        lockLiveRowGeometry();
-      }
-    } else tickLive();
-    requestUnifiedSearchCount();
-  }
-
-  function cbtHasPerformanceData(entry) {
-    if (!entry || typeof entry !== 'object') return false;
-    return ['runs','totalPkgs','totalSec','bestRate','lastRate','totalMissing','totalExpected'].some(function(key){
-      var value = Number(entry[key]); return isFinite(value) && value > 0;
-    });
-  }
-
-  function cbtVerifiedToday() {
-    return cbtVerifiedReports({[todayStr()]:getDisplayHistory()},false).days[todayStr()] || {};
-  }
-  function cbtVerifiedWeek() {
-    return cbtVerifiedReports(getDisplayWeekly(),true).days;
-  }
-  function cbtVerifiedReportNote(report) {
-    return 'Verified unique cart completions only. ' + report.legacyAssociates +
-      ' associate records contain unverifiable legacy totals; retained but excluded. ' +
-      report.excludedEvents + ' out-of-period or invalid event copies excluded.';
-  }
 
   var _cbtVerifiedReportCache=new WeakMap();
-  function cbtVerifiedReports(slices, weekly) {
-    var days={}, owners=new Map(), legacy=new Set(), excluded=0;
-    var tz=getStoreTimezone(), currentDay=todayStr(), now=cbtNowMs();
-    var source=weekly?slices:(slices && slices[currentDay]) || slices;
-    var cacheKey=String(STORE_ID)+'|'+tz+'|'+currentDay+'|'+weekly+'|'+_cbtProfileRevision;
-    var cached=source && typeof source==='object'?_cbtVerifiedReportCache.get(source):null;
-    if(cached && cached.key===cacheKey && now>=cached.at && now-cached.at<5000)return cached.value;
-    var dateFmt=new Intl.DateTimeFormat('en-US',{timeZone:tz,year:'numeric',month:'numeric',day:'numeric'});
-    Object.keys(slices || {}).forEach(function(bucket) {
-      Object.keys(slices[bucket] || {}).forEach(function(name) {
-        var row=slices[bucket][name];
-        if (!row || typeof row!=='object') return;
-        var assoc=cbtAssociateKey(row.assoc || name);
-        if (!assoc) return;
-        var base=cbtPerformanceLegacy(row);
-        if (CBT_TOTAL_FIELDS.some(function(field){return base[field]>0;})) legacy.add(assoc);
-        Object.keys(row._cbtEvents || {}).forEach(function(id) {
-          if(!cbtEventStoreMatches(id)){excluded++;return;}
-          var e=row._cbtEvents[id];
-          if (!e || typeof e!=='object') {excluded++;return;}
-          var at=Number(e.endAt || e.at), sec=Number(e.sec), pkgs=Number(e.pkgs);
-          if(e.startAt!=null){
-            var start=Number(e.startAt);
-            if(!isFinite(start) || start<=0 || start>=at){excluded++;return;}
-            sec=(at-start)/1000;
-          }
-          var rate=pkgs*60/sec;
-          if (!isFinite(at) || at<=0 || at>now || isNaN(new Date(at).getTime()) ||
-              !isFinite(sec) || sec<30 || !isFinite(pkgs) || pkgs<=0 ||
-              !isFinite(rate) || rate>CBT_MAX_VALID_RATE) {excluded++;return;}
-          var day=dateFmt.format(new Date(at));
-          var normalized=Object.assign({},e,{at:at,endAt:at,sec:sec});
-          var revision=Number(e.revision) || at, previous=owners.get(id);
-          var order=previous?cbtCompareCompletion(normalized,previous.event):1;
-          if (!previous || order>0 ||
-              (order===0 && assoc.localeCompare(previous.assoc)<0)) {
-            owners.set(id,{assoc:assoc,day:day,revision:revision,event:normalized});
-          }
-        });
-      });
-    });
-    owners.forEach(function(item,id) {
-      if(weekly ? !cbtIsDateInCurrentWeek(item.day) : item.day!==currentDay){excluded++;return;}
-      var day=days[item.day] || (days[item.day]={});
-      var row=day[item.assoc] || (day[item.assoc]={assoc:item.assoc,_cbtLegacy:{},_cbtEvents:{}});
-      row._cbtEvents[id]=item.event;
-    });
-    Object.keys(days).forEach(function(day) {
-      Object.keys(days[day]).forEach(function(assoc) {
-        days[day][assoc]=cbtMergePerformance({},days[day][assoc],true);
-      });
-    });
-    var result={days:days,legacyAssociates:legacy.size,excludedEvents:excluded};
-    if(source && typeof source==='object')_cbtVerifiedReportCache.set(source,{key:cacheKey,at:now,value:result});
-    return result;
-  }
 
-  function renderHistory() {
-    var tbody=document.querySelector('#cbt-hist-tbody'),empty=document.querySelector('#cbt-hist-empty'),summary=document.querySelector('#cbt-hist-summary');
-    if(!tbody||!empty) return;
-    var verified=cbtVerifiedReports({[todayStr()]:getDisplayHistory()},false);
-    var history=verified.days[todayStr()] || {},entries=Object.values(history).filter(cbtHasPerformanceData);
-    if(summary)summary.title=cbtVerifiedReportNote(verified);
-    if(entries.length===0){setHTML(tbody,'');empty.style.display='block';empty.textContent=verified.legacyAssociates?'No verified completed carts today. Legacy records are retained.':'No completed carts today.';if(summary)summary.innerHTML='';
-      if(historySearchTerm) renderHistoryCrossSearch(historySearchTerm);
-      return;}
-    empty.style.display='none';
-    if(summary){
-      var tA=entries.length,tS=entries.reduce(function(s,e){return s+e.totalSec;},0);
-      var oR=tS>0?entries.reduce(function(s,e){return s+e.totalPkgs;},0)/(tS/60):0;
-      var tMissing=entries.reduce(function(s,e){return s+(e.totalMissing||0);},0);
-      var tExpected=entries.reduce(function(s,e){return s+(e.totalExpected||0);},0);
-      var avgMissPct=tExpected>0?(tMissing/tExpected*100):0;
-      summary.innerHTML='<div class="cbt-ws-stat"><span class="cbt-ws-val">'+tA+'</span><span class="cbt-ws-label">Batchers</span></div>'+
-        '<div class="cbt-ws-stat"><span class="cbt-ws-val">'+oR.toFixed(1)+'</span><span class="cbt-ws-label">Avg Rate</span></div>'+
-        '<div class="cbt-ws-stat"><span class="cbt-ws-val">'+avgMissPct.toFixed(1)+'%</span><span class="cbt-ws-label">Avg Miss %</span></div>';
-    }
-
-    /* Sort the FULL Today list first and stamp each associate's real display
-       position. Search is applied only after that, so searching one person can
-       never renumber that person to #1 just because they are the only match. */
-    var ranked=entries.slice();
-    ranked.sort(function(a,b){
-      var va,vb;
-      if(historySortKey==='assoc'){va=a.assoc.toLowerCase();vb=b.assoc.toLowerCase();return historySortAsc?va.localeCompare(vb):vb.localeCompare(va);}
-      else if(historySortKey==='runs'){va=a.runs;vb=b.runs;}
-      else if(historySortKey==='pkgs'){va=a.totalPkgs;vb=b.totalPkgs;}
-      else if(historySortKey==='lastRate'){va=Number(a.lastRate)||0;vb=Number(b.lastRate)||0;}
-      else if(historySortKey==='bestRate'){va=Number(a.bestRate)||0;vb=Number(b.bestRate)||0;}
-      else{va=Number(a.bestRate)||0;vb=Number(b.bestRate)||0;}
-      return historySortAsc?va-vb:vb-va;
-    });
-    for(var ri=0;ri<ranked.length;ri++) ranked[ri]._displayRank=ri+1;
-
-    var filtered=ranked;
-    if(historySearchTerm){var term=historySearchTerm.toLowerCase();filtered=ranked.filter(function(e){return e.assoc.toLowerCase().indexOf(term)!==-1;});filtered=prioritizeNameMatches(filtered,term,function(e){return e.assoc;});}
-    var html='';
-    for(var i=0;i<filtered.length;i++){
-      var e=filtered[i],bestRate=Number(e.bestRate)||0;
-      var rateCls=bestRate>=WARN_RATE?'good':bestRate>=ALERT_RATE?'warn':'alert';
-      var rk=e._displayRank||0;
-      var rankCls=rk===1?'gold':rk===2?'silver':rk===3?'bronze':'';
-      html+='<tr><td><span class="cbt-cw"><span class="cbt-cw-top"><span class="cbt-rank '+rankCls+'" style="font-size:'+Math.min(16,22 / (String(rk).length * .64)).toFixed(2)+'px">'+rk+'</span><span class="cbt-assoc" role="button" tabindex="0" title="Open associate profile">'+afaEsc(e.assoc)+'</span></span></span></td>';
-      html+='<td><span class="cbt-hist-meta">'+e.runs+'</span></td><td><span class="cbt-hist-meta">'+e.totalPkgs+'</span></td>';
-      html+='<td>'+(bestRate>0?'<span class="cbt-hist-rate '+rateCls+'">'+bestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td>';
-      var latestRate=Number(e.lastRate), latestCls=latestRate>=WARN_RATE?'good':latestRate>=ALERT_RATE?'warn':'alert';
-      html+='<td>'+(latestRate>0?'<span class="cbt-hist-rate '+latestCls+'">'+latestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td></tr>';
-    }
-    setHTML(tbody, html);
-
-    if(historySearchTerm) renderHistoryCrossSearch(historySearchTerm);
-    else {
-      var cross = document.getElementById('cbt-hist-cross');
-      if(cross) cross.innerHTML='';
-    }
-    requestUnifiedSearchCount();
-  }
-
-  function renderHistoryCrossSearch(term) {
-    var crossEl = document.getElementById('cbt-hist-cross');
-    if(!crossEl) return;
-    if(!term){ crossEl.innerHTML=''; return; }
-    term = term.toLowerCase();
-    var weekly = cbtVerifiedWeek(), agg = {};
-    for(var dk of Object.keys(weekly)){
-      for(var a of Object.keys(weekly[dk])){
-        if(a.toLowerCase().indexOf(term)===-1) continue;
-        if(!agg[a]) agg[a]={assoc:a,totalPkgs:0,totalSec:0,runs:0,daysSet:new Set()};
-        agg[a].totalPkgs+=weekly[dk][a].totalPkgs;
-        agg[a].totalSec+=weekly[dk][a].totalSec;
-        agg[a].runs+=weekly[dk][a].runs;
-        agg[a].daysSet.add(dk);
-      }
-    }
-    var entries = prioritizeNameMatches(Object.values(agg), term, function(e){ return e.assoc; });
-    var shown = new Set();
-    var todayHist = cbtVerifiedToday();
-    Object.values(todayHist).forEach(function(e){ if(e.assoc.toLowerCase().indexOf(term)!==-1) shown.add(e.assoc.toLowerCase()); });
-    var html='';
-    if(entries.length>0){
-      html+='<div class="cbt-search-result-section">WEEKLY</div>';
-      entries.forEach(function(e){
-        shown.add(e.assoc.toLowerCase());
-        var avgRate=e.totalSec>0?e.totalPkgs/(e.totalSec/60):0;
-        var rateCls=avgRate>=WARN_RATE?'good':avgRate>=ALERT_RATE?'warn':'alert';
-        html+='<div class="cbt-search-row"><span class="cbt-search-row-name" role="button" tabindex="0" title="Open associate profile">'+afaEsc(e.assoc)+'</span>' +
-        '<span class="cbt-search-row-mid"><span style="display:inline-block;width:45px;text-align:right;">'+e.daysSet.size+'</span> days | <span style="display:inline-block;width:50px;text-align:left;">'+e.totalPkgs+'</span> pkgs</span>' +
-        '<span class="cbt-search-row-rate"><span class="cbt-hist-rate '+rateCls+'">'+avgRate.toFixed(1)+'</span></span></div>';
-      });
-    }
-    html += savedNamesSearchHTML(term, shown);
-    setHTML(crossEl, html);
-  }
+  function renderHistory() { /* Lightweight edition: no lower dashboard view. */ }
 
   function sanitizeWeekly(w) {
     var clean = {};
@@ -7755,294 +5106,13 @@
     return clean;
   }
 
-  function renderWeekly() {
-    var tbody=document.querySelector('#cbt-weekly-tbody'),empty=document.querySelector('#cbt-weekly-empty'),summary=document.querySelector('#cbt-weekly-summary');
-    if(!tbody||!empty) return;
-    var verified=cbtVerifiedReports(getDisplayWeekly(),true);
-    var weekly=verified.days,agg={};
-    if(summary)summary.title=cbtVerifiedReportNote(verified);
-    for(var dayKey of Object.keys(weekly)){
-      for(var assoc of Object.keys(weekly[dayKey])){
-        var d3=weekly[dayKey][assoc];
-        if(!agg[assoc])agg[assoc]={assoc:assoc,totalPkgs:0,totalSec:0,runs:0,totalMissing:0,totalExpected:0,daysSet:new Set(),bestRate:null,lastRate:null,lastAt:0};
-        agg[assoc].totalPkgs+=d3.totalPkgs;agg[assoc].totalSec+=d3.totalSec;agg[assoc].runs+=d3.runs;
-        agg[assoc].totalMissing+=(d3.totalMissing||0);agg[assoc].totalExpected+=(d3.totalExpected||0);agg[assoc].daysSet.add(dayKey);
-        cbtMergeBestFields(agg[assoc], d3);
-        cbtMergeLatestFields(agg[assoc], d3);
-      }
-    }
-    var all=Object.values(agg).filter(cbtHasPerformanceData).map(function(a){
-      var pkgs = Math.min(a.totalPkgs, 100000);
-      var sec  = Math.min(a.totalSec,  500*3600);
-      var runs = Math.min(a.runs, 500);
-      return{assoc:a.assoc,totalPkgs:pkgs,totalSec:sec,runs:runs,days:a.daysSet.size,avgRate:sec>0?pkgs/(sec/60):0,
-        bestRate:Number(a.bestRate)>0?Number(a.bestRate):null,
-        lastRate:Number(a.lastRate)>0?Number(a.lastRate):null,lastAt:Number(a.lastAt)||0,
-        hrs:sec,missPct:a.totalExpected>0?(a.totalMissing/a.totalExpected*100):0};
-    });
-    if(all.length===0){setHTML(tbody,'');empty.style.display='block';empty.textContent=verified.legacyAssociates?'No verified completed carts this week. Legacy records are retained.':'No completed carts this week.';if(summary)summary.innerHTML='';
-      if(weeklySearchTerm) renderWeeklyCrossSearch(weeklySearchTerm);
-      return;}
-    empty.style.display='none';
-    if(summary){
-      var tA=all.length,tS=all.reduce(function(s,e){return s+e.totalSec;},0);
-      var oR=tS>0?all.reduce(function(s,e){return s+e.totalPkgs;},0)/(tS/60):0;
-      var tM=all.reduce(function(s,e){return s+e.missPct;},0)/tA;
-      summary.innerHTML='<div class="cbt-ws-stat"><span class="cbt-ws-val">'+tA+'</span><span class="cbt-ws-label">Batchers</span></div>'+
-        '<div class="cbt-ws-stat"><span class="cbt-ws-val">'+oR.toFixed(1)+'</span><span class="cbt-ws-label">Avg Rate</span></div>'+
-        '<div class="cbt-ws-stat"><span class="cbt-ws-val">'+tM.toFixed(1)+'%</span><span class="cbt-ws-label">Avg Miss %</span></div>';
-    }
-
-    /* Same rule as Today: rank/position comes from the complete Weekly table,
-       then search hides non-matches without changing anybody's true position. */
-    var ranked=all.slice();
-    ranked.sort(function(a,b){
-      var va,vb;
-      if(weeklySortKey==='assoc'){va=a.assoc.toLowerCase();vb=b.assoc.toLowerCase();return weeklySortAsc?va.localeCompare(vb):vb.localeCompare(va);}
-      else if(weeklySortKey==='runs'){va=a.runs;vb=b.runs;}
-      else if(weeklySortKey==='pkgs'){va=a.totalPkgs;vb=b.totalPkgs;}
-      else if(weeklySortKey==='bestRate'){va=Number(a.bestRate)||0;vb=Number(b.bestRate)||0;}
-      else if(weeklySortKey==='lastRate'){va=Number(a.lastRate)||0;vb=Number(b.lastRate)||0;}
-      else if(weeklySortKey==='hrs'){va=a.hrs;vb=b.hrs;}else{va=Number(a.bestRate)||0;vb=Number(b.bestRate)||0;}
-      return weeklySortAsc?va-vb:vb-va;
-    });
-    for(var ri=0;ri<ranked.length;ri++) ranked[ri]._displayRank=ri+1;
-
-    var filtered=ranked;
-    if(weeklySearchTerm){var term=weeklySearchTerm.toLowerCase();filtered=ranked.filter(function(e){return e.assoc.toLowerCase().indexOf(term)!==-1;});filtered=prioritizeNameMatches(filtered,term,function(e){return e.assoc;});}
-    var html='';
-    for(var i=0;i<filtered.length;i++){
-      var e=filtered[i],bestRate=Number(e.bestRate)||0;
-      var rateCls=bestRate>=WARN_RATE?'good':bestRate>=ALERT_RATE?'warn':'alert';
-      var rk=e._displayRank||0;
-      var rankCls=rk===1?'gold':rk===2?'silver':rk===3?'bronze':'';
-      html+='<tr><td><span class="cbt-cw"><span class="cbt-cw-top"><span class="cbt-rank '+rankCls+'" style="font-size:'+Math.min(16,22 / (String(rk).length * .64)).toFixed(2)+'px">'+rk+'</span><span class="cbt-assoc" role="button" tabindex="0" title="Open associate profile">'+afaEsc(e.assoc)+'</span></span></span></td>';
-      html+='<td><span class="cbt-hist-meta">'+e.runs+'</span></td>';
-      html+='<td><span class="cbt-hist-meta">'+e.totalPkgs+'</span></td>';
-      html+='<td>'+(bestRate>0?'<span class="cbt-hist-rate '+rateCls+'">'+bestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td>';
-      var latestRate=Number(e.lastRate), latestCls=latestRate>=WARN_RATE?'good':latestRate>=ALERT_RATE?'warn':'alert';
-      html+='<td>'+(latestRate>0?'<span class="cbt-hist-rate '+latestCls+'">'+latestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td>';
-      html+='<td><span class="cbt-hist-meta">'+fmtHours(e.totalSec)+'</span></td></tr>';
-    }
-    setHTML(tbody, html);
-
-    if(weeklySearchTerm) renderWeeklyCrossSearch(weeklySearchTerm);
-    else {
-      var cross2 = document.getElementById('cbt-weekly-cross');
-      if(cross2) cross2.innerHTML='';
-    }
-    requestUnifiedSearchCount();
-  }
-
-  function savedNamesSearchHTML(term, excludeSet) {
-    term = (term||'').toLowerCase().trim();
-    if (!term) return '';
-    var all = loadAllNames();
-    var matches = [];
-    for (var k in all) {
-      if (k.indexOf(term) !== -1 && (!excludeSet || !excludeSet.has(k))) matches.push(all[k]);
-    }
-    if (!matches.length) return '';
-    matches.sort(function(a,b){ return a.toLowerCase().localeCompare(b.toLowerCase()); });
-    matches = prioritizeNameMatches(matches, term, function(n){ return n; });
-    var html = '<div class="cbt-search-result-section">SAVED NAMES</div>';
-    matches.slice(0, 50).forEach(function(n){
-      html += '<div class="cbt-search-row"><span class="cbt-search-row-name cbt-name-cell" role="button" tabindex="0" title="Open associate profile">' + afaEsc(n) + '</span>' +
-        '<span class="cbt-search-row-mid"></span>' +
-        '<span class="cbt-search-row-rate" style="color:#aaa;">—</span></div>';
-    });
-    if (matches.length > 50) html += '<div style="text-align:center;color:#888;padding:4px;font-size:11px;">+' + (matches.length-50) + ' more, refine search</div>';
-    return html;
-  }
+  function renderWeekly() { /* Lightweight edition: no lower dashboard view. */ }
 
   var _namesScanLast = 0;
-  function renderNames() {
-    var tbody = document.getElementById('cbt-names-tbody');
-    if (!tbody) return;
-    // Throttle the full localStorage scan — it parses every stored JSON blob,
-    // which is wasteful on each search keystroke. Capture still happens via
-    // API hooks and the 5s background interval.
-    var _nowN = Date.now();
-    if (_nowN - _namesScanLast > 5000) {
-      _namesScanLast = _nowN;
-      scanLocalStorageForNames();
-      syncNamesFromAllTabs();
-    }
-    var all = loadAllNames();
-    var totalCount = Object.keys(all).length;
-    var names = Object.keys(all).map(function(k){ return all[k]; });
-    names.sort(function(a,b){ return a.toLowerCase().localeCompare(b.toLowerCase()); });
-
-    var term = (namesSearchTerm||'').toLowerCase().trim();
-    if (term) {
-      names = names.filter(function(n){ return n.toLowerCase().indexOf(term) !== -1; });
-      names = prioritizeNameMatches(names, term, function(n){ return n; });
-    }
-
-    var countEl = document.getElementById('cbt-names-count');
-    if (countEl) {
-      countEl.textContent = totalCount + ' names saved';
-      // Respect dark mode
-      var isDarkMode = document.getElementById('cbt-panel') && document.getElementById('cbt-panel').classList.contains('dark');
-      countEl.style.color = isDarkMode ? '#8faac0' : '#5a7a96';
-    }
-
-    var emptyEl = document.getElementById('cbt-names-empty');
-    if (!names.length) {
-      setHTML(tbody, '');
-      if (emptyEl) { emptyEl.style.display = 'block'; emptyEl.textContent = term ? 'No names match "' + namesSearchTerm + '"' : 'No names saved yet'; }
-      return;
-    }
-    if (emptyEl) emptyEl.style.display = 'none';
-
-    var html = '';
-    names.forEach(function(n){
-      html += '<tr><td style="text-align:left;"><span class="cbt-name-cell" role="button" tabindex="0" title="Open associate profile">' + n + '</span></td></tr>';
-    });
-    setHTML(tbody, html);
-    requestUnifiedSearchCount();
-  }
-
-  function renderWeeklyCrossSearch(term) {
-    var crossEl = document.getElementById('cbt-weekly-cross');
-    if(!crossEl) return;
-    if(!term){ crossEl.innerHTML=''; return; }
-    term = term.toLowerCase();
-    var history = cbtVerifiedToday();
-    var entries = Object.values(history).filter(function(e){ return e.assoc.toLowerCase().indexOf(term)!==-1; });
-    entries = prioritizeNameMatches(entries, term, function(e){ return e.assoc; });
-    var shown = new Set();
-    pruneWeeklyOlderThan(WEEKLY_DAYS);        /* side effect kept as-is */
-    /* This used to iterate pruneWeeklyOlderThan's return value, but that
-       function returns nothing — Object.keys(undefined) threw and the
-       cross-search below never rendered. Read the weekly data directly. */
-    var weeklyData = cbtVerifiedWeek();
-    for(var wdk of Object.keys(weeklyData)){
-      for(var wa of Object.keys(weeklyData[wdk])){
-        if(wa.toLowerCase().indexOf(term)!==-1) shown.add(wa.toLowerCase());
-      }
-    }
-    var html='';
-    if(entries.length>0){
-      html+='<div class="cbt-search-result-section">TODAY</div>';
-      entries.forEach(function(e){
-        shown.add(e.assoc.toLowerCase());
-        var rateCls=e.avgRate>=WARN_RATE?'good':e.avgRate>=ALERT_RATE?'warn':'alert';
-        html+='<div class="cbt-search-row"><span class="cbt-search-row-name" role="button" tabindex="0" title="Open associate profile">'+afaEsc(e.assoc)+'</span>' +
-        '<span class="cbt-search-row-mid"><span style="display:inline-block;width:45px;text-align:right;">'+e.runs+'</span> runs | <span style="display:inline-block;width:50px;text-align:left;">'+e.totalPkgs+'</span> pkgs</span>' +
-        '<span class="cbt-search-row-rate"><span class="cbt-hist-rate '+rateCls+'">'+e.avgRate.toFixed(1)+'</span></span></div>';
-      });
-    }
-    html += savedNamesSearchHTML(term, shown);
-    setHTML(crossEl, html);
-  }
-
-  function tickLive() {
-    if (document.hidden || activeTab !== 'live') return;
-
-    var tbody = document.getElementById('cbt-tbody');
-    if (!tbody || !tbody.isConnected) return;
-
-    var nowMs = cbtNowMs();
-    tbody.querySelectorAll('.cbt-elapsed[data-live="1"]').forEach(function(el){
-      var startMs = parseFloat(el.dataset.start);
-      if (!startMs) return;
-
-      var sec = Math.max(0, (nowMs - startMs) / 1000);
-      var min = sec / 60;
-      var nextClass = 'cbt-elapsed ' +
-        (min >= ALERT_ELAPSED_MIN ? 'alert' : min >= WARN_ELAPSED_MIN ? 'warn' : '');
-      var nextText = fmt(sec);
-
-      if (el.className !== nextClass) el.className = nextClass;
-      if (el.textContent !== nextText) el.textContent = nextText;
-    });
-  }
-
+  function renderNames() { /* Lightweight edition: no lower dashboard view. */ }
 
   /* ── Task Detail Panel ── */
   var _tpRef = null, _tpLiveTerm = '';
-
-  function buildTaskPanel() {
-    var p = document.createElement('div');
-    p.id = 'cbt-tp';
-    var isDark = localStorage.getItem('cbt_dark') !== '0';
-    if (isDark) p.classList.add('dark');
-
-    p.innerHTML =
-      '<div id="cbt-tp-header">' +
-        '<span id="cbt-tp-title">Search Associate</span>' +
-        '<div id="cbt-tp-controls">' +
-          '<span id="cbt-tp-font-dec" title="Smaller text">A−</span>' +
-          '<span id="cbt-tp-font-inc" title="Larger text">A+</span>' +
-          '<span id="cbt-tp-theme" title="Toggle Dark/Light" style="font-size:16px;cursor:pointer;">' + (isDark?'☀️':'🌙') + '</span>' +
-          '<span id="cbt-tp-collapse" title="Roll up/down">🔼</span>' +
-        '</div>' +
-      '</div>' +
-      '<div id="cbt-tp-body">' +
-        '<div style="padding:6px 8px;display:flex;align-items:center;gap:6px;">' +
-          '<input id="cbt-tp-search-input" type="text" placeholder="Search any associate..."/>' +
-          '<button id="cbt-tp-search-clear">✕</button>' +
-        '</div>' +
-        '<div id="cbt-tp-results"></div>' +
-      '</div>';
-
-    return p;
-  }
-
-  function tpRenderSearch(term) {
-    var el = document.getElementById('cbt-tp-results'); if (!el) return;
-    if (!term || !term.trim()) { el.innerHTML = ''; return; }
-    term = term.toLowerCase().trim();
-    var html = '';
-    var seen = new Set();
-
-    taskCache.forEach(function(d){
-      if (cbtIsLiveBatch(d)) {
-        var name = (d.associateId||d.associate||d.driverAssignment||d.shortClientRef||'').toLowerCase();
-        if (name.indexOf(term) !== -1 && !seen.has(name)) {
-          seen.add(name);
-          var r = computeRow(d);
-          var displayName = d.associateId||d.associate||d.driverAssignment||d.shortClientRef||'—';
-          var rc = !r.scanRate?'color:#aaa':r.scanRate>=WARN_RATE?'color:#2a9d2a':r.scanRate>=ALERT_RATE?'color:#e6a817':'color:#cc0000';
-          html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + displayName + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + (r.scanRate?r.scanRate.toFixed(1):'—') + '</span></div>';
-        }
-      }
-    });
-
-    var hist = loadHistory();
-    Object.values(hist).forEach(function(e){
-      if (e.assoc.toLowerCase().indexOf(term) !== -1 && !seen.has(e.assoc.toLowerCase())) {
-        seen.add(e.assoc.toLowerCase());
-        var rc = e.avgRate>=WARN_RATE?'color:#2a9d2a':e.avgRate>=ALERT_RATE?'color:#e6a817':'color:#cc0000';
-        html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + e.avgRate.toFixed(1) + '</span></div>';
-      }
-    });
-
-    var weekly = cbtVerifiedWeek(), agg = {};
-    for (var dk of Object.keys(weekly)) {
-      for (var a of Object.keys(weekly[dk])) {
-        if (a.toLowerCase().indexOf(term) === -1) continue;
-        if (!agg[a]) agg[a] = {assoc:a,totalPkgs:0,totalSec:0};
-        agg[a].totalPkgs+=weekly[dk][a].totalPkgs; agg[a].totalSec+=weekly[dk][a].totalSec;
-      }
-    }
-    Object.values(agg).forEach(function(e){
-      if (!seen.has(e.assoc.toLowerCase())) {
-        seen.add(e.assoc.toLowerCase());
-        var avg = e.totalPkgs/(e.totalSec/60);
-        var rc = avg>=WARN_RATE?'color:#2a9d2a':avg>=ALERT_RATE?'color:#e6a817':'color:#cc0000';
-        html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + avg.toFixed(1) + '</span></div>';
-      }
-    });
-
-    // Saved names — anyone captured from localStorage/sync who isn't already shown above
-    var savedHtml = savedNamesSearchHTML(term, seen);
-    if (savedHtml) html += savedHtml;
-
-    if (!html) html = '<div style="text-align:center;color:#aaa;padding:10px;font-size:13px;font-style:italic;">No results for "' + term + '"</div>';
-    setHTML(el, html);
-  }
 
   /* ── Search Associate panel: drag to move, position remembered ── */
   var TP_POS_KEY = 'cbt_tp_pos';
@@ -8057,11 +5127,7 @@
     } catch(e) {}
     return null;
   }
-  function saveTpPos(left, top) {
-    var json = JSON.stringify({ left: left, top: top });
-    gmSet(TP_POS_KEY, json);
-    try { localStorage.setItem(TP_POS_KEY, json); } catch(e) {}
-  }
+
   /* Keep the panel reachable rather than boxed in: it may hang off any edge
      as long as a grabbable strip of the header stays on screen, so you can
      park it literally anywhere and still drag it back. */
@@ -8084,10 +5150,6 @@
     tp.style.setProperty('bottom', 'auto',      'important');
   }
   /* Read the position from the box itself, not from inline styles. */
-  function tpCurrentPos(tp) {
-    var r = tp.getBoundingClientRect();
-    return { left: r.left, top: r.top };
-  }
 
   function applyTpPos(tp) {
     var p = loadTpPos();
@@ -8102,200 +5164,11 @@
   function cbtCancelUiDrags() {
     Array.from(_cbtActiveDragStops).forEach(function(stop){ stop(); });
   }
-  function cbtBindMouseDrag(handle, start, move, finish, connected) {
-    var active=false, frame=null, latest=null;
-    var raf=typeof requestAnimationFrame==='function'?requestAnimationFrame:function(fn){return setTimeout(fn,16);};
-    var caf=typeof cancelAnimationFrame==='function'?cancelAnimationFrame:clearTimeout;
-    function flush() {
-      frame=null;
-      if (!active || !connected()) { stop(); return; }
-      var point=latest; latest=null;
-      if(point)move(point);
-    }
-    function stop(e) {
-      if (!active) return;
-      // Finish the last pending position only for a normal release. Never
-      // measure or move an off-page panel during blur/navigation cleanup.
-      if(e && e.type==='mouseup' && connected()) {
-        if(frame!==null){caf(frame);frame=null;}
-        if(latest){var point=latest;latest=null;move(point);}
-      }
-      active=false;
-      if(frame!==null){caf(frame);frame=null;}
-      latest=null;
-      document.removeEventListener('mousemove',onMove,true);
-      document.removeEventListener('mouseup',stop,true);
-      document.removeEventListener('visibilitychange',onVisibility,true);
-      window.removeEventListener('blur',stop,true);
-      _cbtActiveDragStops.delete(stop);
-      finish();
-    }
-    function onVisibility(){if(document.hidden)stop();}
-    function onMove(e) {
-      if(!active)return;
-      if(!connected() || (typeof e.buttons==='number' && !(e.buttons & 1))){stop();return;}
-      latest={clientX:e.clientX,clientY:e.clientY};
-      if(frame===null)frame=raf(flush);
-    }
-    if(handle)handle.addEventListener('mousedown',function(e){
-      if(e.button!==0 || !connected())return;
-      cbtCancelUiDrags();
-      if(start(e)===false)return;
-      active=true; latest=null;
-      _cbtActiveDragStops.add(stop);
-      document.addEventListener('mousemove',onMove,true);
-      document.addEventListener('mouseup',stop,true);
-      document.addEventListener('visibilitychange',onVisibility,true);
-      window.addEventListener('blur',stop,true);
-      e.preventDefault();
-    });
-    return stop;
-  }
-  function tpAttachDrag(tp) {
-    var header = tp.querySelector('#cbt-tp-header');
-    if (!header) return;
-    var startX = 0, startY = 0, startLeft = 0, startTop = 0, lastPosition = null;
-
-    tp._cbtStopDrag = cbtBindMouseDrag(header,function(e){
-      /* the +/-, theme and roll buttons must stay clickable */
-      if (e.target.closest('#cbt-tp-controls')) return false;
-      var r = tp.getBoundingClientRect();
-      startX = e.clientX; startY = e.clientY;
-      startLeft = r.left;  startTop = r.top;
-      /* pin to left/top so dragging works regardless of the right-anchored default */
-      tpSetPos(tp, r.left, r.top);
-      lastPosition = {left:r.left,top:r.top};
-      tp.classList.add('cbt-tp-dragging');
-    },function(e){
-      var c = clampTpPos(tp, startLeft + (e.clientX - startX), startTop + (e.clientY - startY));
-      tpSetPos(tp, c.left, c.top);
-      lastPosition = c;
-    },function(){
-      tp.classList.remove('cbt-tp-dragging');
-      if(lastPosition)saveTpPos(lastPosition.left,lastPosition.top);
-    },function(){return tp.isConnected;});
-
-    /* if the window shrinks, pull the panel back into view */
-    window.addEventListener('resize', function(){
-      if (!tp.isConnected || !loadTpPos()) return;
-      var p = tpCurrentPos(tp);
-      var c = clampTpPos(tp, p.left, p.top);
-      tpSetPos(tp, c.left, c.top);
-      saveTpPos(c.left, c.top);
-    });
-  }
 
   /* ── Roll the Search Associate panel up/down; state is remembered ── */
   var TP_ROLLED_KEY = 'cbt_tp_rolled';
-  function loadTpRolled() {
-    var raw = gmGet(TP_ROLLED_KEY, null);
-    if (raw == null) { try { raw = localStorage.getItem(TP_ROLLED_KEY); } catch(e) {} }
-    return raw === '1' || raw === true;
-  }
-  function saveTpRolled(rolled) {
-    var v = rolled ? '1' : '0';
-    gmSet(TP_ROLLED_KEY, v);
-    try { localStorage.setItem(TP_ROLLED_KEY, v); } catch(e) {}
-  }
-  function applyTpRolled(tp, rolled) {
-    if (rolled) tp.classList.add('cbt-tp-rolled');
-    else tp.classList.remove('cbt-tp-rolled');
-    var btn = tp.querySelector('#cbt-tp-collapse');
-    if (btn) btn.textContent = rolled ? '🔽' : '🔼';
-  }
 
-  function tpAttachEvents(tp) {
-    /* ── roll up / down ── */
-    var _tpRolled = loadTpRolled();
-    applyTpRolled(tp, _tpRolled);
-    var rollBtn = tp.querySelector('#cbt-tp-collapse');
-    if (rollBtn) rollBtn.addEventListener('click', function(){
-      _tpRolled = !_tpRolled;
-      applyTpRolled(tp, _tpRolled);
-      saveTpRolled(_tpRolled);
-      /* rolled up the panel is short — make sure it is still on screen */
-      if (loadTpPos()) {
-        var p = tpCurrentPos(tp);
-        var c = clampTpPos(tp, p.left, p.top);
-        tpSetPos(tp, c.left, c.top);
-      }
-    });
-
-    // ── theme toggle ──
-    var themeBtn = tp.querySelector('#cbt-tp-theme');
-    if (themeBtn) themeBtn.addEventListener('click', function(){
-      var isDark = tp.classList.toggle('dark');
-      localStorage.setItem('cbt_dark', isDark ? '1' : '0');
-      themeBtn.textContent = isDark ? '☀️' : '🌙';
-    });
-
-    // ── font size +/- ──
-    var _tpFontScale = loadTpFontScale();
-    applyTpFontScale(tp, _tpFontScale);
-
-    var fontIncBtn = tp.querySelector('#cbt-tp-font-inc');
-    var fontDecBtn = tp.querySelector('#cbt-tp-font-dec');
-    if (fontIncBtn) fontIncBtn.addEventListener('click', function() {
-      _tpFontScale = Math.min(2.0, Math.round((_tpFontScale + 0.1) * 10) / 10);
-      saveTpFontScale(_tpFontScale);
-      applyTpFontScale(tp, _tpFontScale);
-      applyTpPos(tp);
-    });
-    if (fontDecBtn) fontDecBtn.addEventListener('click', function() {
-      _tpFontScale = Math.max(0.7, Math.round((_tpFontScale - 0.1) * 10) / 10);
-      saveTpFontScale(_tpFontScale);
-      applyTpFontScale(tp, _tpFontScale);
-      applyTpPos(tp);
-    });
-
-    // ── search input ──
-    tp.addEventListener('input', function(e){
-      if (e.target.id === 'cbt-tp-search-input') {
-        _tpLiveTerm = e.target.value;
-        tpRenderSearch(_tpLiveTerm);
-      }
-    });
-
-    // ── clear search ──
-    tp.addEventListener('click', function(e){
-      if (e.target.id === 'cbt-tp-search-clear') {
-        var i = tp.querySelector('#cbt-tp-search-input');
-        if (i) { i.value = ''; _tpLiveTerm = ''; tpRenderSearch(''); }
-      }
-
-    });
-  }
-
-  function injectTaskPanel() {
-    var existingTp = document.getElementById('cbt-tp');
-    if (existingTp && existingTp.isConnected) return;
-    if (!shouldShowSearchPanel()) return;
-
-    /* COMO's cart page clips fixed-position children, so ancestors get
-       overflow:visible. The Outbound site needs none of that. */
-    if (document.querySelector('div.job-details')) {
-      var mainContent = document.querySelector('div.container.main-content') || document.querySelector('.container.main-content');
-      if (mainContent) mainContent.style.overflow = 'visible';
-      var body = document.querySelector('body');
-      if (body) body.style.overflow = 'visible';
-      var ngScope = document.querySelector('.ng-scope');
-      if (ngScope) ngScope.style.overflow = 'visible';
-      var el = document.querySelector('div.job-details');
-      while (el && el !== document.body) {
-        var s = window.getComputedStyle(el).overflow;
-        if (s === 'hidden' || s === 'auto' || s === 'scroll') el.style.overflow = 'visible';
-        el = el.parentElement;
-      }
-    }
-
-    if (!_tpRef) {
-      _tpRef = buildTaskPanel();
-      tpAttachDrag(_tpRef);
-      tpAttachEvents(_tpRef);
-    }
-    document.body.appendChild(_tpRef);
-    applyUiScale();
-  }
+  function injectTaskPanel() { /* Lightweight edition: no lower dashboard view. */ }
 
   /* Exactly one panel per page type:
        cart/task detail page -> Associate Search only
@@ -8929,7 +5802,6 @@
     if (e && e.key === 'Escape' && _qrOverlay) qrClose();
   }, true);
 
-
   /* ══════════════════════════════════════
      AUTO FORCE ASSIGN
 
@@ -9374,7 +6246,6 @@
       try { p1hScanVisibleTasks(); } catch(e) {}
     }, scanDelay);
   }
-
 
   /* Deep-scan a fetched job payload for its assignability. */
   function afaAssignabilityDeep(obj, depth) {
@@ -10001,27 +6872,6 @@
     });
   }
 
-  function afaFindFirstMissingJob(candidates, onProgress) {
-    candidates = candidates || [];
-    var idx = 0;
-
-    function next() {
-      if (idx >= candidates.length) return Promise.resolve(null);
-      var item = candidates[idx++];
-
-      if (typeof onProgress === 'function') {
-        try { onProgress(idx, candidates.length, item); } catch(e) {}
-      }
-
-      return afaProbeMissingJob(item).then(function(info){
-        if (info && info.missingIds && info.missingIds.length) return info;
-        return next();
-      });
-    }
-
-    return next();
-  }
-
   /* Collect every verified missing-package ID across every requested section.
      Each entry keeps its own task/cart context so the carousel can show one
      missing package at a time without mixing carts between jobs. */
@@ -10342,81 +7192,6 @@
     });
   }
 
-  function afaMissingQrChecking() {
-    afaShell(
-      'Missing Package QR',
-      '<div id="cbt-afa-lead">Finding MISSING / DAMAGED packages…</div>' +
-      '<div id="cbt-afa-bar"><div id="cbt-afa-fill"></div></div>' +
-      '<div id="cbt-afa-live" style="color:var(--cb-text2);font-size:12px;">Checking Tasks alerts + all Problem Solve.</div>',
-      '<button class="cbt-afa-act" data-afa="close">Cancel</button>'
-    );
-
-    var card = _afaOverlay && _afaOverlay.querySelector('#cbt-afa-card');
-    if (!card) return;
-    card.addEventListener('click', function(e){
-      var b = e.target.closest('[data-afa="close"]');
-      if (b) afaClose();
-    });
-  }
-
-  function afaRunMissingQr() {
-    if (_afaRunning) return;
-
-    var candidates = afaScanMissingCandidates();
-    if (!candidates.length) {
-      afaMissingQrResult(null);
-      return;
-    }
-
-    afaMissingQrChecking();
-    var qrOverlay = _afaOverlay, qrSeq = ++_afaMissingMenuCheckSeq;
-    var qrStore = STORE_ID, qrRoute = location.href;
-    function qrCheckActive() {
-      return !!_afaOverlay && _afaOverlay === qrOverlay && qrSeq === _afaMissingMenuCheckSeq &&
-        STORE_ID === qrStore && location.href === qrRoute;
-    }
-
-    afaRefreshJobData().then(function(){
-      if (!qrCheckActive()) return;
-
-      /* Re-scan after the fresh dashboard response so job IDs are current. */
-      var freshCandidates = afaScanMissingCandidates();
-      if (freshCandidates.length) candidates = freshCandidates;
-
-      return afaFindAllMissingJobs(candidates, function(done, total, item){
-        if (!_afaOverlay) return;
-        var lead = document.getElementById('cbt-afa-lead');
-        var fill = document.getElementById('cbt-afa-fill');
-        var live = document.getElementById('cbt-afa-live');
-
-        if (lead) lead.innerHTML =
-          'Finding MISSING / DAMAGED packages… <b>' + done + '</b> of <b>' + total + '</b>';
-        if (fill) fill.style.width = Math.round((done / Math.max(1, total)) * 100) + '%';
-        if (live) {
-          live.textContent = 'Checking ' + (item.section || 'Tasks') +
-            ' · task ' + (item.ref || '');
-        }
-      }, qrCheckActive);
-    }).then(function(info){
-      if (!qrCheckActive()) return;
-      afaMissingQrResult(info || null);
-    }).catch(function(){
-      if (!qrCheckActive()) return;
-      afaShell(
-        'Missing Package QR',
-        '<div id="cbt-afa-lead">Could not read the package details right now.</div>' +
-        '<div class="cbt-afa-note">Nothing was changed. Try again after the dashboard finishes loading.</div>',
-        '<button class="cbt-afa-act" data-afa="back">Back</button>'
-      );
-      var card = _afaOverlay && _afaOverlay.querySelector('#cbt-afa-card');
-      if (card) {
-        card.addEventListener('click', function(e){
-          if (e.target.closest('[data-afa="back"]')) afaConfirm();
-        });
-      }
-    });
-  }
-
   /* ── Complete Task eligibility — NO time rule ──
      The old AM/PM / Batch Target heuristic is intentionally gone. When Auto
      Complete is enabled, the script asks the site itself whether Complete Task
@@ -10428,142 +7203,10 @@
      is skipped for completion rather than guessed. */
   var AFA_COMPLETE_PROBE_TIMEOUT_MS = 7000;
 
-  function afaFindCompleteButton(doc) {
-    if (!doc) return null;
-    var buttons;
-    try { buttons = doc.querySelectorAll('button'); } catch(e) { return null; }
-    for (var i = 0; i < buttons.length; i++) {
-      var b = buttons[i];
-      var label = ((b.getAttribute('title') || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.textContent || '')).replace(/\s+/g, ' ').trim();
-      if (!/complete\s*task/i.test(label)) continue;
-      if (b.closest('[hidden], [aria-hidden="true"]')) continue;
-      var visible=true, node=b;
-      try {
-        while(node && node.nodeType===1) {
-          var style=doc.defaultView.getComputedStyle(node);
-          if(style.display==='none' || style.visibility==='hidden' || style.visibility==='collapse') {visible=false;break;}
-          node=node.parentElement;
-        }
-      } catch(eStyle) {}
-      if(visible)return b;
-    }
-    return null;
-  }
-
   /* If the job-details JSON exposes a clearly named boolean capability flag,
      trust that first. This is deliberately strict: unrelated "complete"
      counters/statuses are ignored, and only boolean keys that explicitly mean
      can/enable/allow/eligible/completable are accepted. */
-  function afaCompleteCapabilityFlag(obj, depth) {
-    if (obj == null || depth > 7) return null;
-    if (Array.isArray(obj)) {
-      for (var i = 0; i < obj.length && i < 600; i++) {
-        var ar = afaCompleteCapabilityFlag(obj[i], depth + 1);
-        if (ar !== null) return ar;
-      }
-      return null;
-    }
-    if (typeof obj !== 'object') return null;
-    for (var k in obj) {
-      var v = obj[k];
-      if (typeof v !== 'boolean') continue;
-      var key = String(k).replace(/[_\-\s]/g, '').toLowerCase();
-      var explicit =
-        /^(can|should|is)?(enable|enabled|allow|allowed|eligible|completable).*complete/.test(key) ||
-        /^complete.*(enable|enabled|allow|allowed|eligible|completable)$/.test(key) ||
-        /^(can|should)complete(job|task)?$/.test(key) ||
-        /^(is)?completable(job|task)?$/.test(key);
-      if (explicit) return v;
-    }
-    for (var k2 in obj) {
-      var child = obj[k2];
-      if (child && typeof child === 'object') {
-        var r = afaCompleteCapabilityFlag(child, depth + 1);
-        if (r !== null) return r;
-      }
-    }
-    return null;
-  }
-
-  function afaProbeCompleteButtonState(jobId) {
-    return new Promise(function(resolve){
-      if (!jobId || !document.body) {
-        resolve({ eligible: false, verified: false, reason: 'Complete Task eligibility could not be checked' });
-        return;
-      }
-
-      var frame = document.createElement('iframe');
-      frame.className = 'cbt-missing-probe-frame';
-      var done = false, started = Date.now();
-      var lastDisabled = null, stable = 0, stateSince = 0;
-      frame.setAttribute('aria-hidden', 'true');
-      frame.tabIndex = -1;
-      frame.style.cssText = 'position:fixed!important;left:-10000px!important;top:-10000px!important;width:1px!important;height:1px!important;opacity:0!important;pointer-events:none!important;border:0!important;';
-
-      function finish(result) {
-        if (done) return;
-        done = true;
-        try { frame.remove(); } catch(e) { try { frame.parentNode && frame.parentNode.removeChild(frame); } catch(e2) {} }
-        resolve(result);
-      }
-
-      function poll() {
-        if (done) return;
-        if (_afaRunning && _afaStop) {finish({eligible:false,verified:false,reason:'Stopped'});return;}
-        if (Date.now() - started > AFA_COMPLETE_PROBE_TIMEOUT_MS) {
-          finish({ eligible: false, verified: false, reason: 'Complete Task eligibility could not be verified' });
-          return;
-        }
-
-        var doc = null, btn = null;
-        try { doc = frame.contentDocument || (frame.contentWindow && frame.contentWindow.document); } catch(e) {}
-        try { btn = afaFindCompleteButton(doc); } catch(e2) {}
-
-        if (btn) {
-          var aria = String(btn.getAttribute('aria-disabled') || '').toLowerCase();
-          var disabled = !!btn.disabled || btn.hasAttribute('disabled') || aria === 'true' || btn.classList.contains('disabled') || btn.matches(':disabled');
-          if (disabled === lastDisabled) stable++; else { lastDisabled = disabled; stable = 1; stateSince=Date.now(); }
-
-          /* Wait long enough for Angular's ng-disabled expression to settle.
-             Enabled gets the longer dwell because a button can briefly render
-             enabled before the controller finishes applying its state. */
-          var dwell = disabled ? 400 : 900;
-          if (stable >= 3 && Date.now() - stateSince >= dwell) {
-            finish({
-              eligible: !disabled,
-              verified: true,
-              reason: disabled ? 'Complete Task is disabled by the site' : 'Complete Task is enabled by the site'
-            });
-            return;
-          }
-        }
-        setTimeout(poll, 120);
-      }
-
-      var src = COMO_BASE + '/store/' + encodeURIComponent(STORE_ID) + '/jobdetails?jobId=' + encodeURIComponent(jobId) + '&cbtAfaProbe=1';
-      frame.src = src;
-      document.body.appendChild(frame);
-      setTimeout(poll, 120);
-    });
-  }
-
-  function afaProbeCompletable(jobId) {
-    return afaFetchJobInfo(jobId).then(function(info){
-      var flag = info ? afaCompleteCapabilityFlag(info, 0) : null;
-      if (flag !== null) {
-        return {
-          eligible: !!flag,
-          verified: true,
-          reason: flag ? 'Complete Task is enabled by job data' : 'Complete Task is disabled by job data'
-        };
-      }
-      /* No explicit capability flag in the JSON: fall back to the exact UI
-         control that the user would see on the real job-details page. */
-      return afaProbeCompleteButtonState(jobId);
-    }, function(){
-      return afaProbeCompleteButtonState(jobId);
-    });
-  }
 
   /* An explicitly empty main Tasks section blocks Auto Complete, even when
      aggregate totals or side sections still contain job links. */
@@ -10656,34 +7299,6 @@
   /* Merge candidate sources by cart identity. Flags are preserved because
      the Force Assign and Auto Complete modes build separate queues from the
      same dashboard data; Auto Complete never falls back to Force Assign. */
-  function afaMergeQueue(base, extra) {
-    var out = [];
-    function same(a, b) {
-      if (a.id && b.id && a.id === b.id) return true;
-      return !!(a.ref && b.ref && a.ref === b.ref);
-    }
-    function add(it) {
-      if (!it) return;
-      var hit = null;
-      for (var i = 0; i < out.length; i++) { if (same(out[i], it)) { hit = out[i]; break; } }
-      if (!hit) {
-        out.push({
-          ref: it.ref, id: it.id,
-          partial: !!it.partial,
-          unassignable: !!it.unassignable,
-          completeCandidate: !!it.completeCandidate
-        });
-        return;
-      }
-      if (!hit.id && it.id) hit.id = it.id;
-      hit.partial = hit.partial || !!it.partial;
-      hit.unassignable = hit.unassignable || !!it.unassignable;
-      hit.completeCandidate = hit.completeCandidate || !!it.completeCandidate;
-    }
-    (base || []).forEach(add);
-    (extra || []).forEach(add);
-    return out;
-  }
 
   /* Complete Task — the same call the site's own Complete Task button makes,
      captured from DevTools: POST with an empty JSON body, answering 200 with
@@ -12235,24 +8850,6 @@
       }
     } catch(e2) {}
 
-    /* Legacy Fastest cleanup is retained only for backward compatibility.
-       v23.9.84 reads the clean v2 Fastest namespace instead. */
-    try {
-      var peaks = hofLoadPeaks(), cleanP = {};
-      for (var pk in peaks) {
-        if (Number(peaks[pk] && peaks[pk].rate) > 0 &&
-            Number(peaks[pk].rate) <= CBT_MAX_VALID_RATE) cleanP[pk] = peaks[pk];
-      }
-      hofSavePeaks(cleanP);
-
-      var latest = hofLoadLatest(), cleanL = {};
-      for (var lk in latest) {
-        if (Number(latest[lk] && latest[lk].rate) > 0 &&
-            Number(latest[lk].rate) <= CBT_MAX_VALID_RATE) cleanL[lk] = latest[lk];
-      }
-      hofSaveLatest(cleanL);
-    } catch(e3) {}
-
     _dispHistCache = null;
     _dispWeekCache = null;
 
@@ -12426,7 +9023,6 @@
     }
 
     setInterval(panelHealthCheck, PANEL_HEALTH_MS);
-    setInterval(taskPanelHealthCheck, PANEL_HEALTH_MS);
 
     _fastMountUntil = Date.now() + 60000;
     setInterval(function(){
@@ -12483,7 +9079,6 @@
       pollActiveTasks();
       fetchAndUpdate();
       setInterval(pollActiveTasks, POLL_MS);
-      setInterval(tickLive, TICK_MS);
       setInterval(fetchAndUpdate, 5000);
     }
   }
@@ -12502,211 +9097,13 @@
 
   /* Associate profiles: read existing ledgers only; no new polling or storage. */
   var _cbtProfile = null, _cbtProfilePending = false, _cbtProfileRevision = 0;
-  function cbtProfileChanged() {
-    _cbtProfileRevision++;
-    cbtScheduleProfileRefresh();
-  }
-  function cbtScheduleProfileRefresh() {
-    if (!_cbtProfile || _cbtProfilePending || document.hidden) return;
-    _cbtProfilePending = true;
-    cbtIdle(function(){ _cbtProfilePending=false; if (_cbtProfile) cbtRenderProfile(); },300);
-  }
-  function cbtProfileSummary(slices, assoc, timezone, weekly) {
-    if(weekly==null)weekly=Object.keys(slices).some(function(day){return day!==todayStr();});
-    var report=cbtVerifiedReports(slices,weekly);
-    var total={}, days=Object.keys(report.days), key=cbtAssociateKey(assoc), legacyCarts=0,legacyPkgs=0;
-    Object.keys(slices).forEach(function(day){
-      if(weekly?!cbtIsDateInCurrentWeek(day):day!==todayStr())return;
-      Object.keys(slices[day] || {}).forEach(function(name){
-        var row=slices[day][name];
-        if(row && cbtAssociateKey(row.assoc || name)===key){
-          var old=cbtPerformanceLegacy(row);legacyCarts+=old.runs;legacyPkgs+=old.totalPkgs;
-        }
-      });
-    });
-    days.forEach(function(day){
-      var records=report.days[day];
-      Object.keys(records).forEach(function(k){
-        var row=records[k];
-        if (cbtAssociateKey(row.assoc || k)===key) total=cbtMergePerformance(total,row,false);
-      });
-    });
-    var hours={}, trackedPkgs=0, trackedCarts=0, trackedSec=0, latestAt=0, latestRate=null, fast=0;
-    var fmtParts=new Intl.DateTimeFormat('en-US',{timeZone:timezone,minute:'2-digit',second:'2-digit'});
-    var hourFmt=new Intl.DateTimeFormat('en-US',{timeZone:timezone,month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'});
-    Object.keys(total._cbtEvents || {}).forEach(function(id){
-      var e=total._cbtEvents[id], at=Number(e.at), pkgs=Number(e.pkgs), sec=Number(e.sec);
-      if (!isFinite(at) || at<=0 || !isFinite(pkgs) || !(pkgs>0) || !isFinite(sec) || sec<30) return;
-      var rate=pkgs/(sec/60); if (!isFinite(rate) || rate>CBT_MAX_VALID_RATE) return;
-      var day=cbtStoreDateKey(at,timezone);
-      if (days.indexOf(day)===-1) return;
-      var parts=fmtParts.formatToParts(new Date(at)), minute=0, second=0;
-      parts.forEach(function(p){if(p.type==='minute') minute=Number(p.value);if(p.type==='second') second=Number(p.value);});
-      var start=at-minute*60000-second*1000-(at%1000);
-      var bucket=hours[start] || (hours[start]={at:start,label:hourFmt.format(new Date(start)),carts:0,pkgs:0,sec:0,details:[]});
-      bucket.carts++;bucket.pkgs+=pkgs;bucket.sec+=sec;
-      var ref=e.cartRef;
-      if(!ref){try{ref=decodeURIComponent(id).split('|')[1];}catch(ignore){}}
-      bucket.details.push({ref:ref || 'Cart ID unavailable',start:Number(e.startAt) || at-sec*1000,end:at,pkgs:pkgs,sec:sec,rate:rate});
-      trackedSec+=sec;if(at>latestAt){latestAt=at;latestRate=rate;}
-      trackedPkgs+=pkgs;trackedCarts++;fast=Math.max(fast,rate);
-    });
-    // Verified totals and hourly rows share one ledger; legacy aggregates are
-    // retained separately because their identities/timestamps cannot be verified.
-    return {carts:trackedCarts,pkgs:trackedPkgs,
-      average:trackedSec>0?trackedPkgs/(trackedSec/60):null,
-      fastest:fast || null,latest:latestRate,
-      hours:Object.keys(hours).map(function(k){return hours[k];}).sort(function(a,b){return a.at-b.at;}),
-      untrackedCarts:legacyCarts,
-      untrackedPkgs:legacyPkgs};
-  }
-  function cbtProfileLiveRate(assoc) {
-    var pkgs=0, sec=0, key=cbtAssociateKey(assoc);
-    taskCache.forEach(function(d){
-      if (!cbtIsLiveBatch(d) || cbtAssociateKey(d.associateId || d.associate || d.driverAssignment || '')!==key) return;
-      var row=computeRow(d), count=Number(d.packagesBatched);
-      if (isFinite(count) && count>0 && isFinite(row.elapsedSec) && row.elapsedSec>0 && row.fullRate>0 && row.fullRate<=CBT_MAX_VALID_RATE) { pkgs+=count;sec+=row.elapsedSec; }
-    });
-    return sec>0?pkgs/(sec/60):null;
-  }
-  function cbtCloseProfile() {
-    if (!_cbtProfile) return;
-    var old=_cbtProfile;_cbtProfile=null;old.overlay.remove();
-    if (old.trigger && old.trigger.isConnected) {try {old.trigger.focus({preventScroll:true});}catch(e){}}
-  }
-  function cbtScaleProfile() {
-    if (!_cbtProfile) return;
-    var card=_cbtProfile.card;
-    var zoom=Math.max(.01,Math.min(cbtResponsivePopupScale()*1.3,
-      Math.max(1,window.innerWidth-24)/680,Math.max(1,window.innerHeight-24)/Math.max(1,card.scrollHeight || 580)));
-    if(Number(card.style.zoom)!==zoom)card.style.zoom=zoom;
-  }
-  function cbtCartTimeTaken(start, end) {
-    start = Number(start); end = Number(end);
-    if (!isFinite(start) || !isFinite(end) || start <= 0 || end <= 0 ||
-        end < start || isNaN(new Date(start).getTime()) || isNaN(new Date(end).getTime()))
-      return 'Unavailable';
-    var seconds = Math.floor((end - start) / 1000);
-    var hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds % 3600 / 60);
-    var remainder = seconds % 60;
-    return (hours ? hours + ' hr ' : '') + minutes + ' min ' + remainder + ' sec';
-  }
+  function cbtProfileChanged() { /* Lightweight edition: no lower dashboard view. */ }
 
-  function cbtRenderProfile() {
-    if (!_cbtProfile || !_cbtProfile.card.isConnected) return;
-    var p=_cbtProfile, today=todayStr(), timezone=getStoreTimezone();
-    var cacheKey=p.assoc+'|'+p.period+'|'+today+'|'+timezone+'|'+_cbtProfileRevision;
-    if (p.cacheKey!==cacheKey) {
-      var slices=p.period==='week'?getDisplayWeekly():Object.fromEntries([[today,getDisplayHistory()]]);
-      p.summary=cbtProfileSummary(slices,p.assoc,timezone,p.period==='week');p.cacheKey=cacheKey;
-    }
-    var m=p.summary;
-    function rate(n){return isFinite(n)&&n>0?Number(n).toFixed(1):'—';}
-    var current=cbtProfileLiveRate(p.assoc);
-    var metrics=[['Total carts',m.carts],['Total packages',m.pkgs],['Average rate',rate(m.average)],['Fastest rate',rate(m.fastest)],['Current live rate',rate(current)],['Latest cart rate',rate(m.latest)]];
-    var metricHtml=metrics.map(function(v){return '<div><span>'+v[0]+'</span><b>'+afaEsc(String(v[1]))+'</b></div>';}).join('');
-    var metricsEl=p.card.querySelector('[data-profile-metrics]');
-    var changed=metricsEl._cbtLastHTML!==metricHtml;
-    setHTML(metricsEl,metricHtml);
-    var endFmt=new Intl.DateTimeFormat('en-US',{timeZone:timezone,hour:'numeric',minute:'2-digit',timeZoneName:'short'});
-    var html=m.hours.map(function(h){
-      var end=endFmt.format(new Date(h.at+3600000));
-      var clock=new Intl.DateTimeFormat('en-US',{timeZone:timezone,hour:'numeric',minute:'2-digit',second:'2-digit',timeZoneName:'short'});
-      var detail=h.details.slice().sort(function(a,b){return a.end-b.end;}).map(function(d){
-        function timestamp(value) {
-          return isFinite(value) && value > 0 && !isNaN(new Date(value).getTime())
-            ? clock.format(new Date(value)) : 'Unavailable';
-        }
-        return '<tr><td>'+afaEsc(d.ref)+'</td><td>'+afaEsc(timestamp(d.start))+'</td><td>'+afaEsc(timestamp(d.end))+'</td><td>'+afaEsc(cbtCartTimeTaken(d.start,d.end))+'</td><td>'+d.pkgs+'</td><td>'+rate(d.rate)+'</td></tr>';
-      }).join('');
-      var expanded=p.expandedHour===String(h.at);
-      return '<tr><td><button type="button" data-profile-hour="'+h.at+'" aria-expanded="'+expanded+'">'+afaEsc(h.label+' – '+end)+'</button></td><td>'+h.carts+'</td><td>'+h.pkgs+'</td><td>'+rate(h.pkgs/(h.sec/60))+'</td></tr>'+
-        (expanded?'<tr class="cbt-profile-detail-row"><td colspan="4"><div class="cbt-profile-details"><strong class="cbt-profile-details-title">Cart details</strong><div class="cbt-profile-details-scroll"><table><thead><tr><th>Cart</th><th>Started</th><th>Finished</th><th>Time Taken</th><th>Packages</th><th>Rate</th></tr></thead><tbody>'+detail+'</tbody></table></div></div></td></tr>':'');
-    }).join('');
-    html=html || '<tr><td colspan="4">No timestamped completed carts in this period.</td></tr>';
-    var tbody=p.card.querySelector('tbody');changed=changed || tbody._cbtLastHTML!==html;
-    setHTML(tbody,html);
-    var note='Store time: '+timezone+'. Carts and packages are grouped by completion hour. Rates are packages per minute of recorded batching time.';
-    if (m.untrackedCarts || m.untrackedPkgs) note+=' Older unverified totals: '+m.untrackedCarts+' carts, '+m.untrackedPkgs+' packages. Preserved separately; excluded from these verified totals and rates because cart identities or timestamps are unavailable.';
-    var noteEl=p.card.querySelector('[data-profile-note]');if(noteEl.textContent!==note){noteEl.textContent=note;changed=true;}
-    if(changed)cbtScaleProfile();
-  }
-  function cbtOpenProfile(assoc, trigger) {
-    assoc=cbtAssociateKey(assoc);if(!assoc)return;
-    cbtCloseProfile();
-    var overlay=document.createElement('div');overlay.id='cbt-profile-overlay';
-    var dark=document.getElementById('cbt-panel');if(dark && dark.classList.contains('dark'))overlay.classList.add('dark');
-    overlay.innerHTML='<section id="cbt-profile-card" role="dialog" aria-modal="true" aria-labelledby="cbt-profile-title">'+
-      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
-      '<div class="cbt-profile-controls"><span>Period <span class="cbt-profile-period"><button type="button" data-profile-period-toggle aria-label="Profile period" aria-haspopup="menu" aria-expanded="false">Today ▾</button><span class="cbt-profile-period-menu" role="menu" aria-label="Profile period" hidden><button type="button" role="menuitemradio" data-profile-period="today" aria-checked="true">Today</button><button type="button" role="menuitemradio" data-profile-period="week" aria-checked="false">This week</button></span></span></span><span title="All rate values below use packages per minute of batching time">Rate Unit: Packages/Minute</span></div>'+
-      '<div class="cbt-profile-metrics" data-profile-metrics></div><div class="cbt-profile-table-wrap"><table><thead><tr><th>Completion hour</th><th>Carts</th><th>Packages</th><th>Rate</th></tr></thead><tbody></tbody></table></div>'+
-      '<p data-profile-note></p></section>';
-    document.body.appendChild(overlay);
-    var card=overlay.querySelector('section');_cbtProfile={assoc:assoc,period:activeTab==='weekly'?'week':'today',overlay:overlay,card:card,trigger:trigger};
-    var periodToggle=card.querySelector('[data-profile-period-toggle]'),
-      periodMenu=card.querySelector('.cbt-profile-period-menu');
-    function closePeriod(focus) {
-      periodMenu.hidden=true;periodToggle.setAttribute('aria-expanded','false');
-      if(focus)periodToggle.focus();
-    }
-    function updatePeriod() {
-      periodToggle.textContent=(_cbtProfile.period==='week'?'This week':'Today')+' ▾';
-      periodMenu.querySelectorAll('[data-profile-period]').forEach(function(b){
-        b.setAttribute('aria-checked',String(b.getAttribute('data-profile-period')===_cbtProfile.period));
-      });
-    }
-    function openPeriod(focus) {
-      periodMenu.hidden=false;periodToggle.setAttribute('aria-expanded','true');
-      if(focus)periodMenu.querySelector('[aria-checked="true"]').focus();
-    }
-    updatePeriod();
-    overlay.addEventListener('click',function(e){
-      if(e.target.closest('[data-profile-period-toggle]')){
-        if(periodMenu.hidden)openPeriod(false);else closePeriod(false);return;
-      }
-      var option=e.target.closest('[data-profile-period]');
-      if(option && _cbtProfile){
-        _cbtProfile.period=option.getAttribute('data-profile-period');
-        _cbtProfile.expandedHour=null;updatePeriod();closePeriod(true);cbtRenderProfile();return;
-      }
-      closePeriod(false);
-      var hour=e.target.closest('[data-profile-hour]');if(hour && _cbtProfile){var value=hour.getAttribute('data-profile-hour');_cbtProfile.expandedHour=_cbtProfile.expandedHour===value?null:value;cbtRenderProfile();return;}if(e.target===overlay || e.target.closest('[data-profile-close]'))cbtCloseProfile();
-    });
-    overlay.addEventListener('keydown',function(e){
-      if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(!periodMenu.hidden)closePeriod(true);else cbtCloseProfile();}
-      else if((e.key==='ArrowDown' || e.key==='ArrowUp' || e.key==='Home' || e.key==='End') && e.target.closest('.cbt-profile-period')){
-        e.preventDefault();if(periodMenu.hidden){openPeriod(true);return;}
-        var options=Array.from(periodMenu.querySelectorAll('button')),index=options.indexOf(document.activeElement);
-        index=e.key==='Home'?0:e.key==='End'?options.length-1:(index+(e.key==='ArrowDown'?1:-1)+options.length)%options.length;
-        options[index].focus();
-      }
-      else if(e.key==='Tab') {closePeriod(false);var controls=Array.from(card.querySelectorAll('button,select')).filter(function(b){return !b.closest('[hidden]');}),first=controls[0],last=controls[controls.length-1];if(e.shiftKey && document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey && document.activeElement===last){e.preventDefault();first.focus();}}
-    });
-    cbtRenderProfile();card.querySelector('button').focus();
-  }
-  function cbtProfileFromEvent(e) {
-    var el=e.target.closest('.cbt-assoc, .cbt-name-cell, .cbt-search-row-name, .cbt-tp-row-name');
-    if(!el || !el.closest('#cbt-panel, #cbt-tp'))return;
-    var name=el.cloneNode(true);name.querySelectorAll('.cbt-rank,.cbt-slow-alert,.cbt-copied-tag').forEach(function(n){n.remove();});
-    cbtOpenProfile(name.textContent.trim(),el);
-  }
+  function cbtScaleProfile() { /* Lightweight edition: no lower dashboard view. */ }
 
   var _cbtReportRefreshPending=false;
   function cbtScheduleReportRefresh() {
-    cbtProfileChanged();
-    if (_cbtReportRefreshPending) return;
-    _cbtReportRefreshPending=true;
-    cbtIdle(cbtRefreshVisibleReport,300);
-  }
-  function cbtRefreshVisibleReport() {
-    _cbtReportRefreshPending=false;
-    _dispHistCache = null; _dispWeekCache = null;
-    if (document.hidden) return;
-    if (activeTab === 'history') renderHistory();
-    else if (activeTab === 'weekly') renderWeekly();
-    else if (activeTab === 'hof') renderHallOfFame();
-    else if (activeTab === 'names') renderNames();
-    else requestLiveRender();
+    _dispHistCache=null; _dispWeekCache=null;
   }
 
   function cbtWhenPageSettles(fn) {
@@ -12730,17 +9127,8 @@
       function(){ scanLocalStorageForNames(); },
       function(){ syncHistoryPull(function(){ syncHistoryPush(); }); },
       function(){ syncWeeklyPull(function(){ syncWeeklyPush(); }); },
-      function(){ hofPull(); }
+      function(){ /* No Fastest tab or Fastest sync in this edition. */ }
     ]);
-
-    setInterval(function(){
-      if (document.hidden) return;
-      cbtIdle(function(){
-        if (document.hidden) return;
-        if (syncNamesFromAllTabs() && activeTab === 'names') renderNames();
-      }, 700);
-    }, 5000);
-
 
     window.addEventListener('storage',function(event){
       if ([STORAGE_KEY,OWN_WEEKLY_KEY,REMOTE_HISTORY_KEY,REMOTE_WEEKLY_KEY,ALL_NAMES_KEY,HOF_PEAKS_KEY,HOF_LATEST_KEY,HOF_REMOTE_KEY,HOF_OWN_KEY].indexOf(event.key) === -1) return;
@@ -12752,7 +9140,6 @@
     setInterval(function(){ if (!document.hidden) syncPull(); }, 30000);
     setInterval(function(){ if (!document.hidden) syncHistoryPull(); }, 10000);
     setInterval(function(){ if (!document.hidden) syncWeeklyPull(); }, 10000);
-    setInterval(function(){ if (!document.hidden) cbtIdle(function(){ try { hofPull(); } catch(e8) {} }, 900); }, 15000);
 
     /* When returning to the tab, refresh shared Today/Weekly immediately.
        Network work is asynchronous and the pull functions only touch the DOM
@@ -12798,3 +9185,4 @@
   }
 
 })();
+
