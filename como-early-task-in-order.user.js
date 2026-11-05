@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.199
-// @description  Lightweight summary counters, Run actions, task order, Time Left, QR and associate name suggestions
+// @version      23.9.206
+// @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
 // @match        https://na.store-management.f3.amazon.dev/*
@@ -18,26 +18,52 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.199
+  /* LIGHTWEIGHT EDITION v23.9.206
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
      Completed-cart data stays available to the staffing recommendation.
      Install IN PLACE OF the full script; do not enable both editions. */
 
-  /* Hidden eligibility / Missing Package probes load real job-details pages
-     in same-origin iframes. NEVER start a second copy of this full userscript
-     inside those probe frames. The Amazon page inside the frame still loads
-     normally, but duplicate timers, observers and polling are prevented. */
-  if (window.top !== window.self &&
-      /[?&](?:cbtAfaProbe|cbtMissingQrProbe)=1(?:&|$)/.test(window.location.search)) return;
+  /* Never start the full dashboard runtime in ANY iframe. COMO and the Run
+     checker can create same-origin frames; a second runtime there would stack
+     authenticated polling, observers, timers and network hooks. The iframe's
+     native Amazon page still loads normally and remains readable by its parent. */
+  if (window.top !== window.self) return;
+
+  /* On an authentication route, do absolutely nothing: no hooks, polling,
+     observers, UI, storage work or retries while Global Identity owns the page. */
+  if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.199');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.206');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
+  var _cbtAuthSuspendedUntil = 0;
+  var _cbtLastNativeJsonAt = 0;
+  var CBT_AUTH_SUSPEND_MS = 15 * 60000;
+  function cbtAuthCircuitOpen() { return Date.now() < _cbtAuthSuspendedUntil; }
+  function cbtAuthLikeUrl(value) {
+    try {
+      var u = new URL(String(value || ''), location.href);
+      return u.origin !== location.origin || /\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(u.pathname) ||
+        /(?:midway|identity|federat|authportal)/i.test(u.hostname);
+    } catch(e) { return true; }
+  }
+  function cbtSuspendForAuth() {
+    _cbtAuthSuspendedUntil = Math.max(_cbtAuthSuspendedUntil, Date.now() + CBT_AUTH_SUSPEND_MS);
+    _cbtLastNativeJsonAt = 0;
+    try { _cbtPassiveQueue.length = 0; } catch(e) {}
+    try { _p1hQueue.length = 0; _p1hQueued.clear(); } catch(e2) {}
+    try { _afaMissingMenuCheckSeq++; } catch(e3) {}
+    try { document.querySelectorAll('.cbt-missing-probe-frame').forEach(function(frame){ frame.remove(); }); } catch(e4) {}
+  }
+  function cbtNativeSessionRecent(maxAge) {
+    return !cbtAuthCircuitOpen() && _cbtLastNativeJsonAt > 0 &&
+      Date.now() - _cbtLastNativeJsonAt < (maxAge || 60000);
+  }
   function cbtAuthPage() {
     var route = location.href;
     if (_cbtAuthCache.route === route && Date.now() < _cbtAuthCache.until) return _cbtAuthCache.value;
@@ -49,7 +75,7 @@
   }
 
   function cbtApplicationReady() {
-    if (cbtAuthPage()) return false;
+    if (cbtAuthCircuitOpen() || cbtAuthPage()) return false;
     return isOutboundSite() || (isComoSite() && /\/store\/[^/]+(?:\/|$)/i.test(location.pathname));
   }
 
@@ -233,7 +259,7 @@
       -ms-user-select: text !important; user-select: text !important;
     }
     #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn {
-
+      
       display: inline-flex !important; align-items: center; justify-content: center;
       font-size: 13px !important; line-height: 1.35 !important;
       padding: 3px 9px !important; border-radius: 5px !important;
@@ -705,6 +731,17 @@
       overflow: hidden !important;
       text-overflow: clip !important;
     }
+    /* The Missing action has a longer label than the other actions. Give its
+       grid column enough room so "Check Missing Package QR" is never clipped. */
+    #cbt-afa-missing-block {
+      grid-template-columns: 218px minmax(0, 1fr);
+    }
+    #cbt-afa-missing-block .cbt-afa-missing-btn {
+      width: 218px !important;
+      min-width: 218px !important;
+      max-width: 218px !important;
+      white-space: nowrap !important;
+    }
     .cbt-afa-missing-btn:hover {
       background: #b3261e !important;
       border-color: #b3261e !important;
@@ -770,7 +807,7 @@
       display: grid;
       grid-template-columns: repeat(2, 260px);
       justify-content: center;
-
+      
       column-gap: 400px;
       row-gap: 50px;
       align-items: start;
@@ -845,7 +882,7 @@
       font-size: 12px; color: var(--cb-text2); line-height: 1.55;
       padding: 8px 13px 0; }
     #cbt-ac-drop {
-      position: fixed; z-index: 2147483647;
+      position: fixed; z-index: 2147483647;   
       background: #fff; border: 1px solid var(--cb-border); border-radius: 9px;
       box-shadow: 0 12px 36px rgba(13,27,42,.28), 0 2px 8px rgba(13,27,42,.16);
       font-family: var(--cb-sans); overflow: hidden;
@@ -1683,6 +1720,7 @@
     _cbtSiblingMemo = new WeakMap();
     try { for (var i = 0; i < hosts.length; i++) refreshTimerHost(hosts[i]); }
     finally { _cbtSectionMemo = null; _cbtSiblingMemo = null; }
+    try { afaScheduleStaleCycleAutoComplete(700); } catch(e2) {}
   }
 
   var timerWatcher = new MutationObserver(function(mutations) {
@@ -2279,7 +2317,7 @@
     cbtUpdateTaskCounts();
   }
   function fetchAndUpdate() {
-    if (_statsFetchInFlight || document.hidden || !isDashboardView() || !cbtApplicationReady() || !STORE_ID) return;
+    if (_statsFetchInFlight || document.hidden || !isDashboardView() || !cbtApplicationReady() || !STORE_ID || !cbtNativeSessionRecent(60000)) return;
     // Read the inexpensive visible counts even when the API is throttled.
     cbtUpdateTaskCounts();
     if(_cbtLastStatsStore===STORE_ID && Date.now()-_cbtLastStatsFetch<5000)return;
@@ -3281,7 +3319,7 @@
     if (!v || isNaN(v)) v = 1;
     return Math.min(2.0, Math.max(0.7, v));
   }
-
+  
   function applyTpFontScale(tp, scale) {
     if (!tp) return;
     var body = tp.querySelector('#cbt-tp-body');
@@ -4626,7 +4664,8 @@
     try {
       var response = await _nativeFetch.call(window, url, Object.assign({}, options, {signal: ctrl.signal}));
       if (!response.ok || response.redirected || !/json/i.test(response.headers.get('content-type') || '')) {
-        _cbtReadBackoff[endpoint] = Date.now() + ((response.status === 401 || response.status === 403 || response.redirected) ? 60000 : 10000);
+        if (response.status === 401 || response.status === 403 || response.redirected || cbtAuthLikeUrl(response.url)) cbtSuspendForAuth();
+        _cbtReadBackoff[endpoint] = Date.now() + ((response.status === 401 || response.status === 403 || response.redirected) ? CBT_AUTH_SUSPEND_MS : 10000);
         throw new Error('Application JSON unavailable: ' + response.status);
       }
       var data = await response.json();
@@ -4749,7 +4788,11 @@
     var snapshot = /\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(requestUrl);
     if (cbtCaptureUrl(requested)) promise.then(function(resp){
       try {
-        if (!resp.ok || resp.redirected || !/json/i.test(resp.headers.get('content-type') || '')) return;
+        if (!resp.ok || resp.redirected || !/json/i.test(resp.headers.get('content-type') || '') || cbtAuthLikeUrl(resp.url)) {
+          if (resp.status === 401 || resp.status === 403 || resp.redirected || cbtAuthLikeUrl(resp.url)) cbtSuspendForAuth();
+          return;
+        }
+        _cbtLastNativeJsonAt = Date.now();
         resp.clone().text().then(function(raw){ cbtQueuePassive(raw, requestStore, snapshot, requestSequence, requestUrl); }).catch(function(){});
       } catch(e) {}
     }, function(){});
@@ -4763,9 +4806,13 @@
   };
   function cbtXhrLoaded() {
     try {
+      if (this.status === 401 || this.status === 403 || (this.responseURL && cbtAuthLikeUrl(this.responseURL))) {
+        cbtSuspendForAuth(); return;
+      }
       if (!cbtCaptureUrl(this._cbtUrl) || this.status < 200 || this.status >= 300 ||
           !/json/i.test(this.getResponseHeader('content-type') || '')) return;
       if (this.responseURL && !cbtCaptureUrl(this.responseURL)) return;
+      _cbtLastNativeJsonAt = Date.now();
       if (this.responseType === 'json') cbtQueuePassive(this.response,this._cbtStore,/\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(this._cbtUrl),this._cbtSequence,this._cbtUrl);
       else if (!this.responseType || this.responseType === 'text') cbtQueuePassive(this.responseText,this._cbtStore,/\/activeJobsWithSiteSummary(?:[?/#]|$)/.test(this._cbtUrl),this._cbtSequence,this._cbtUrl);
     } catch(e) {}
@@ -4782,7 +4829,7 @@
 
   var _cbtPollInFlight = false;
   async function pollActiveTasks() {
-    if (_cbtPollInFlight || document.hidden || !cbtApplicationReady() || !STORE_ID) return;
+    if (_cbtPollInFlight || document.hidden || !cbtApplicationReady() || !STORE_ID || !cbtNativeSessionRecent(60000)) return;
     /* Reuse a valid snapshot the site just delivered. The existing 2s timer
        remains the fallback if the site stops supplying fresh snapshots. */
     if (_cbtLastPageSnapshotStore === STORE_ID && Date.now() - _cbtLastPageSnapshotAt < 1800) return;
@@ -5005,7 +5052,11 @@
 
     // Returning to the dashboard refreshes stats promptly after off-page polling pauses.
     if(_cbtStatsCurrent && _cbtStatsCurrent.store===STORE_ID)updateStats.apply(null,_cbtStatsCurrent.args);
-    fetchAndUpdate();
+    /* Mount cached UI first; coalesce with the normal stats polling instead
+       of launching another request for every Angular detach/remount. */
+    if (!_cbtStatsCurrent || _cbtStatsCurrent.store !== STORE_ID) {
+      setTimeout(function(){ if (isDashboardView()) fetchAndUpdate(); }, 0);
+    }
     /* Reapply cached P-1-H highlights as soon as task rows return. */
     try { p1hScheduleVisibleScan(); } catch(ex) {}
   }
@@ -5127,7 +5178,7 @@
     } catch(e) {}
     return null;
   }
-
+  
   /* Keep the panel reachable rather than boxed in: it may hang off any edge
      as long as a grabbable strip of the header stays on screen, so you can
      park it literally anywhere and still drag it back. */
@@ -5831,8 +5882,8 @@
   var _afaRunning  = false, _afaStop = false, _afaOverlay = null;
   var _afaRunState = null;
 
-  /* Missing QR availability is verified only when ▶ Run opens.
-     The button remains disabled unless a real MISSING package is confirmed. */
+  /* Missing QR is checked only after the user explicitly clicks its button.
+     Opening Run never creates authenticated hidden job-detail pages. */
   var _afaMissingMenuInfo = null;
   var _afaMissingMenuCheckSeq = 0;
 
@@ -5863,6 +5914,8 @@
         _afaJobInfo[id].ref = ref;
         _afaJobInfo[id].lastSeen = Date.now();
         if (asg) _afaJobInfo[id].assignability = asg;
+        var assignedCart = afaAssignedCartFromJson(obj);
+        if (assignedCart) _afaJobInfo[id].assignedCart = assignedCart;
       }
     }
     for (var k2 in obj) { var v = obj[k2]; if (v && typeof v === 'object') afaRecordJobs(v, depth + 1); }
@@ -5898,14 +5951,18 @@
   /* Ask the server directly for one job's details. Read-only GET; if the
      endpoint is not there it simply fails and the caller falls back to the
      dashboard data the script already holds. */
-  function afaFetchJobInfo(jobId) {
+    function afaFetchJobInfo(jobId) {
+    if (!cbtNativeSessionRecent(60000)) return Promise.resolve(null);
     var url = COMO_BASE + '/api/store/' + STORE_ID + '/job/' + encodeURIComponent(jobId);
     var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
     var timer = setTimeout(function(){ if (ctrl) ctrl.abort(); }, AFA_TIMEOUT_MS);
     var opts = { method: 'GET', credentials: 'include', headers: { 'Accept': 'application/json' } };
     if (ctrl) opts.signal = ctrl.signal;
     return _origFetch(url, opts).then(function(res){
-      if (!res.ok) { clearTimeout(timer); return null; }
+      if (!res.ok || res.redirected || cbtAuthLikeUrl(res.url) || !/json/i.test(res.headers.get('content-type') || '')) {
+        if (res.status === 401 || res.status === 403 || res.redirected || cbtAuthLikeUrl(res.url)) cbtSuspendForAuth();
+        clearTimeout(timer); return null;
+      }
       return res.json().then(function(j){ clearTimeout(timer); return j; }, function(){ clearTimeout(timer); return null; });
     }, function(){ clearTimeout(timer); return null; });
   }
@@ -6457,8 +6514,9 @@
      package with Status = MISSING or DAMAGED.
 
      QR #1 = the Scannable Id from the SAME MISSING/DAMAGED package row.
-     QR #2 = the first CART_... Last Known Location found in that job.
-     If the job has no CART_... value, only QR #1 is generated.
+     QR #2 = the verified cart assigned to the task (for example CART_4637).
+     Package Last Known Location values are never used as the cart QR. If the
+     assigned cart cannot be verified, only QR #1 is generated.
 
      Discovery checks only alert-looking rows in the main Tasks list for
      performance, but checks EVERY readable row in Problem Solve because
@@ -6474,6 +6532,58 @@
     var s = afaMissingText(v);
     var m = s.match(/\bCART_[A-Z0-9][A-Z0-9_-]*\b/i);
     return m ? m[0] : '';
+  }
+
+  /* Return the cart assigned to the TASK, never a package's Last Known
+     Location. The old implementation accepted the first CART_ value anywhere
+     in the response/table, so a location such as CART_PB2200_SLOT_4 could be
+     rendered as the task cart QR. Candidates are now limited to cart-bearing
+     task fields and package/location branches are explicitly excluded. */
+  function afaAssignedCartFromJson(root) {
+    var best = null;
+    var visited = 0;
+
+    function excludedPath(path) {
+      return /(?:lastknown|location|package|packages|order|stow|slot)/i.test(path);
+    }
+
+    function visit(obj, depth, path, taskContext) {
+      if (!obj || typeof obj !== 'object' || depth > 6 || visited++ > 5000) return;
+      if (Array.isArray(obj)) {
+        for (var a = 0; a < obj.length && a < 3000; a++) visit(obj[a], depth + 1, path + '[]', taskContext);
+        return;
+      }
+
+      var localTask = taskContext ||
+        typeof obj.shortClientRef === 'string' ||
+        afaLooksLikeJobId(obj.id) || afaLooksLikeJobId(obj.jobId) || afaLooksLikeJobId(obj.taskId);
+
+      for (var key in obj) {
+        var value = obj[key];
+        var nextPath = path ? path + '.' + key : key;
+        var normalized = String(key).replace(/[^a-z0-9]/gi, '').toLowerCase();
+
+        if (typeof value === 'string' && !excludedPath(nextPath)) {
+          var cart = afaMissingCartValue(value);
+          if (cart) {
+            var score = 0;
+            if (/^(?:assigned|batching|destination)?cart(?:id|code|label|name|scannableid|barcode)?$/.test(normalized)) score += 140;
+            else if (/cart/.test(normalized)) score += 95;
+            else if (localTask && /^(?:scannableid|barcode|containerid|containerlabel)$/.test(normalized)) score += 75;
+            if (localTask) score += 80;
+            score += Math.max(0, 20 - depth * 3);
+            if (score > 0 && (!best || score > best.score)) best = { value: cart, score: score };
+          }
+        }
+
+        if (value && typeof value === 'object' && !excludedPath(nextPath)) {
+          visit(value, depth + 1, nextPath, localTask);
+        }
+      }
+    }
+
+    visit(root, 0, '', false);
+    return best ? best.value : '';
   }
 
   function afaMissingScannableFromObject(obj) {
@@ -6511,10 +6621,21 @@
     return '';
   }
 
+  function afaNearbyCartConsensus(samples) {
+    var cart = '', count = 0;
+    for (var i = 0; i < samples.length; i++) {
+      var value = afaMissingText(samples[i]).toUpperCase();
+      if (!/^CART_(?!PB|.*_SLOT_)[A-Z0-9]+$/.test(value)) continue;
+      if (cart && cart !== value) return '';
+      cart = value; count++;
+    }
+    return count >= 2 ? cart : '';
+  }
+
   function afaMissingInfoFromJson(root) {
     var missingIds = [];
     var problemPackages = [];
-    var cart = '';
+    var cart = afaAssignedCartFromJson(root);
     var sawPackageSignals = false;
     var seenProblem = Object.create(null);
 
@@ -6533,10 +6654,6 @@
         if (/status/i.test(k)) hasStatusKey = true;
         if (/scannable.*id/i.test(k)) hasScannableKey = true;
 
-        if (!cart && typeof obj[k] === 'string') {
-          var cv = afaMissingCartValue(obj[k]);
-          if (cv) cart = cv;
-        }
       }
 
       if (hasStatusKey || hasScannableKey) sawPackageSignals = true;
@@ -6559,6 +6676,28 @@
     }
 
     walk(root, 0);
+    function nearby(obj, depth) {
+      if (!obj || typeof obj !== 'object' || depth > 8) return;
+      if (Array.isArray(obj)) {
+        for (var n = 0; n < obj.length && n < 3000; n++) {
+          var status = afaMissingStatusFromObject(obj[n]);
+          if (status) {
+            var sid = afaMissingScannableFromObject(obj[n]);
+            var samples = obj.slice(n + 1, n + 6).map(function(p){
+              if (!p || typeof p !== 'object') return '';
+              if (String(p.status || p.packageStatus || '').toUpperCase() !== 'BATCHED') return '';
+              return afaMissingCartValue(p.lastKnownLocation || p.last_known_location || '');
+            });
+            var fallback = afaNearbyCartConsensus(samples);
+            problemPackages.forEach(function(p){ if (p.id === sid) p.cart = fallback; });
+          }
+          nearby(obj[n], depth + 1);
+        }
+      } else {
+        Object.keys(obj).forEach(function(k){ nearby(obj[k], depth + 1); });
+      }
+    }
+    if (!cart) nearby(root, 0);
     return {
       missingIds: missingIds,
       problemPackages: problemPackages,
@@ -6583,13 +6722,6 @@
       var cells = [];
       try { cells = Array.prototype.slice.call(row.querySelectorAll('td')); } catch(e2) {}
       if (!cells.length) continue;
-
-      for (var c = 0; c < cells.length; c++) {
-        if (!cart) {
-          var cv = afaMissingCartValue(cells[c].textContent || '');
-          if (cv) cart = cv;
-        }
-      }
 
       var statusIdx = -1;
       var packageStatus = '';
@@ -6622,7 +6754,16 @@
       if (sid && !seen[problemKey]) {
         seen[problemKey] = true;
         missingIds.push(sid);
-        problemPackages.push({ id: sid, status: packageStatus });
+        var samples = [];
+        for (var next = i + 1; next < rows.length && next <= i + 5; next++) {
+          if (rows[next].closest('table') !== row.closest('table')) break;
+          var following = Array.prototype.slice.call(rows[next].querySelectorAll('td'));
+          if (!following[statusIdx] || afaMissingText(following[statusIdx].textContent).toUpperCase() !== 'BATCHED') continue;
+          /* Location is two columns after Scannable Id in COMO's package table. */
+          var locationCell = following[statusIdx + 3];
+          samples.push(locationCell ? afaMissingCartValue(locationCell.textContent) : '');
+        }
+        problemPackages.push({ id: sid, status: packageStatus, cart: afaNearbyCartConsensus(samples) });
       }
     }
 
@@ -6645,9 +6786,11 @@
     if (!id && ref && _afaJobIndex[ref]) id = _afaJobIndex[ref];
     if (!id) return null;
 
+    var cachedJob = _afaJobInfo[id];
     return {
       ref: ref,
       id: id,
+      cart: cachedJob && cachedJob.assignedCart || '',
       section: section || 'Tasks',
       alertScore: Number(baseScore) || 0,
       domOrder: Number(order) || 0
@@ -6770,7 +6913,7 @@
 
   function afaProbeMissingJobPage(item, shouldContinue) {
     return new Promise(function(resolve){
-      if (!item || !item.id || !document.body || (shouldContinue && !shouldContinue())) {
+      if (!item || !item.id || !document.body || !cbtNativeSessionRecent(60000) || (shouldContinue && !shouldContinue())) {
         resolve(null);
         return;
       }
@@ -6799,7 +6942,7 @@
 
       function poll() {
         if (done) return;
-        if (shouldContinue && !shouldContinue()) { finish(null); return; }
+        if (!cbtNativeSessionRecent(60000) || (shouldContinue && !shouldContinue())) { finish(null); return; }
         if (Date.now() - started > 5500) {
           finish(null);
           return;
@@ -6810,8 +6953,16 @@
         catch(e) {}
 
         if (doc) {
+          try {
+            var frameUrl = frame.contentWindow && frame.contentWindow.location && frame.contentWindow.location.href;
+            var frameText = doc.body && doc.body.textContent || '';
+            if ((frameUrl && frameUrl !== 'about:blank' && cbtAuthLikeUrl(frameUrl)) || /Login with Global Identity|Invalid login\. Please try again/i.test(frameText)) {
+              cbtSuspendForAuth(); finish(null); return;
+            }
+          } catch(authError) {}
           var info = afaMissingInfoFromDocument(doc);
           if (info.missingIds.length) {
+            info.cart = item.cart || '';
             info.ref = item.ref;
             info.id = item.id;
             info.section = item.section || 'Tasks';
@@ -6851,6 +7002,7 @@
       if (info) {
         var parsed = afaMissingInfoFromJson(info);
         if (parsed.missingIds.length) {
+          parsed.cart = parsed.cart || item.cart || '';
           parsed.ref = item.ref;
           parsed.id = item.id;
           parsed.section = item.section || 'Tasks';
@@ -6932,7 +7084,7 @@
             entries.push({
               missingId: sid,
               packageStatus: packageStatus,
-              cart: info.cart || '',
+              cart: info.cart || packages[i].cart || '',
               ref: info.ref || item.ref || '',
               id: info.id || item.id || '',
               section: info.section || item.section || 'Tasks'
@@ -6974,7 +7126,7 @@
       out.push({
         missingId: sid,
         packageStatus: afaMissingText(packages[i] && packages[i].status).toUpperCase() || 'MISSING',
-        cart: info.cart || '',
+        cart: info.cart || packages[i].cart || '',
         ref: info.ref || '',
         id: info.id || '',
         section: info.section || 'Tasks'
@@ -7101,7 +7253,7 @@
 
       var note = hasCart
         ? packageKind + ' QR + cart QR.'
-        : 'No CART_ location was found, so only the ' + packageKind.toLowerCase() + ' QR is shown.';
+        : 'The assigned task cart could not be verified, so only the ' + packageKind.toLowerCase() + ' QR is shown.';
 
       stage.innerHTML =
         '<div class="cbt-missing-qr-summary">' +
@@ -7192,15 +7344,114 @@
     });
   }
 
-  /* ── Complete Task eligibility — NO time rule ──
-     The old AM/PM / Batch Target heuristic is intentionally gone. When Auto
-     Complete is enabled, the script asks the site itself whether Complete Task
-     is available for that cart by loading the real job-details route in a
-     hidden same-origin iframe and reading the actual Complete Task button state.
+  /* ── Previous-cycle AM/PM Auto Complete ──
+     A task with an AM target can occasionally reappear during PM (or a PM task
+     during the following AM). A meridiem mismatch by itself is not enough:
+     11:59 AM at 12:01 PM is valid current work. Require at least six hours of
+     verified age, then ask COMO's native completeJob endpoint. Only the literal
+     server response `true` is accepted as a completion. */
+  var AFA_STALE_CYCLE_MIN_AGE_MS = 6 * 60 * 60 * 1000;
+  var AFA_STALE_CYCLE_MAX_AGE_MS = 36 * 60 * 60 * 1000;
+  var AFA_STALE_CYCLE_RETRY_MS = 15 * 60 * 1000;
+  var _afaStaleCycleTimer = null;
+  var _afaStaleCycleRunning = false;
+  var _afaStaleCycleAttempts = new Map();
+  var _afaStaleCycleStore = '';
 
-     This is read-only. No completeJob POST is sent unless the site's own button
-     has settled into an enabled state. If the site cannot be checked, the cart
-     is skipped for completion rather than guessed. */
+  function afaIsOppositePeriodStale(targetMs, targetPeriod, nowMs, currentHour) {
+    targetMs = Number(targetMs);
+    nowMs = Number(nowMs == null ? Date.now() : nowMs);
+    currentHour = Number(currentHour);
+    targetPeriod = String(targetPeriod || '').toUpperCase();
+    if (!targetMs || (targetPeriod !== 'AM' && targetPeriod !== 'PM')) return false;
+    var currentPeriod = currentHour >= 12 ? 'PM' : 'AM';
+    var age = nowMs - targetMs;
+    return targetPeriod !== currentPeriod &&
+      age >= AFA_STALE_CYCLE_MIN_AGE_MS && age <= AFA_STALE_CYCLE_MAX_AGE_MS;
+  }
+
+  function afaScanStaleCycleCandidates() {
+    if (!isDashboardView()) return [];
+    var heading = document.querySelector('div.row.job-card-header');
+    var targetIndex;
+    if (heading) {
+      var labels = Array.from(heading.querySelectorAll(':scope > div[class*="col-"]'))
+        .filter(function(col){ return !col.classList.contains('etf-col-cell'); });
+      targetIndex = labels.findIndex(function(col){ return /batch\s*target/i.test(col.textContent || ''); });
+    }
+    var clock = cbtStoreClockParts();
+    var now = Date.now(), out = [], seen = Object.create(null);
+    document.querySelectorAll('job-card').forEach(function(card){
+      if (out.length >= 40) return;
+      try { if (isInExcludedSection(card)) return; } catch(e0) {}
+      var text = String(card.textContent || '');
+      if (/\b(?:COMPLETED|COMPLETE|CANCELLED|CANCELED|DONE|FINISHED|CLOSED)\b/i.test(text)) return;
+      var tm = text.match(/\b\d{1,2}:\d{2}\s*(AM|PM)\b/i);
+      if (!tm) return;
+      var targetMs = getBatchTarget(card, heading, targetIndex);
+      if (!afaIsOppositePeriodStale(targetMs, tm[1], now, clock.hour)) return;
+
+      var links = card.querySelectorAll('a'), a = null;
+      for (var i = 0; i < links.length; i++) {
+        if (/[?&]jobId=/i.test(links[i].getAttribute('href') || '')) { a = links[i]; break; }
+      }
+      if (!a && links.length) a = links[0];
+      var ref = a ? String(a.textContent || '').trim() : '';
+      var id = null, match = a && (a.getAttribute('href') || '').match(/[?&]jobId=([^&#]+)/i);
+      if (match) { try { id = decodeURIComponent(match[1]); } catch(e1) { id = match[1]; } }
+      if (!id && ref && _afaJobIndex[ref]) id = _afaJobIndex[ref];
+      if (!id || seen[id]) return;
+      seen[id] = true;
+      out.push({ id: id, ref: ref || '(unknown)', targetMs: targetMs });
+    });
+    return out;
+  }
+
+  function afaRunStaleCycleAutoComplete() {
+    _afaStaleCycleTimer = null;
+    if (_afaStaleCycleRunning || _afaRunning || !isDashboardView() || !cbtNativeSessionRecent(60000)) return;
+    if (_afaStaleCycleStore !== STORE_ID) {
+      _afaStaleCycleStore = STORE_ID;
+      _afaStaleCycleAttempts.clear();
+    }
+    var now = Date.now();
+    _afaStaleCycleAttempts.forEach(function(value, key){
+      if (!value || now - value.at > 36 * 60 * 60 * 1000) _afaStaleCycleAttempts.delete(key);
+    });
+    var queue = afaScanStaleCycleCandidates().filter(function(item){
+      var prior = _afaStaleCycleAttempts.get(item.id);
+      return !prior || (!prior.ok && now - prior.at >= AFA_STALE_CYCLE_RETRY_MS);
+    });
+    if (!queue.length) return;
+
+    _afaStaleCycleRunning = true;
+    var index = 0, store = STORE_ID;
+    function finish() { _afaStaleCycleRunning = false; }
+    function next() {
+      if (index >= queue.length || store !== STORE_ID || _afaRunning || !cbtNativeSessionRecent(60000)) { finish(); return; }
+      var item = queue[index++];
+      _afaStaleCycleAttempts.set(item.id, { at: Date.now(), ok: false });
+      afaCompleteTask(item.id).then(function(result){
+        var ok = afaCompletedOk(result);
+        _afaStaleCycleAttempts.set(item.id, { at: Date.now(), ok: ok });
+        if (result && (result.status === 401 || result.status === 403 || result.status === 429)) {
+          if (result.status === 401 || result.status === 403) cbtSuspendForAuth();
+          finish();
+          return;
+        }
+        setTimeout(next, 450);
+      }).catch(function(){ setTimeout(next, 450); });
+    }
+    next();
+  }
+
+  function afaScheduleStaleCycleAutoComplete(delay) {
+    if (_afaStaleCycleTimer || _afaStaleCycleRunning || !isDashboardView()) return;
+    _afaStaleCycleTimer = setTimeout(afaRunStaleCycleAutoComplete, Math.max(250, Number(delay) || 700));
+  }
+
+  /* Manual Auto Complete continues to scan all current task sections. The
+     native server remains the final authority for every completion. */
   var AFA_COMPLETE_PROBE_TIMEOUT_MS = 7000;
 
   /* If the job-details JSON exposes a clearly named boolean capability flag,
@@ -7554,22 +7805,22 @@
         ? 'Unavailable: the Complete Task request is not configured.'
         : (completeDisabled
             ? 'No tasks available to Auto Complete.'
-            : 'Checks every task section using the native Complete Task request. Only server-approved completions count. Never Force Assigns.')
+            : 'Checks every task section using the native Complete Task request. Previous-cycle AM/PM carts are checked automatically. Only server-approved completions count. Never Force Assigns.')
     );
 
     var missingCandidates = afaScanMissingCandidates();
     _afaMissingMenuInfo = null;
 
     var missingBlock =
-      '<div class="cbt-afa-action-block off" id="cbt-afa-missing-block">' +
+      '<div class="cbt-afa-action-block' + (missingCandidates.length ? '' : ' off') + '" id="cbt-afa-missing-block">' +
         '<button type="button" class="cbt-afa-act cbt-afa-action-btn cbt-afa-missing-btn" ' +
-          'id="cbt-afa-missing-btn" data-afa="missingqr" disabled>' +
+          'id="cbt-afa-missing-btn" data-afa="missingqr"' + (missingCandidates.length ? '' : ' disabled') + '>' +
           '<span class="cbt-afa-missing-triangle">▲</span>' +
-          (missingCandidates.length ? 'Checking…' : 'No Missing/Damaged') +
+          (missingCandidates.length ? 'Check Missing Package QR' : 'No Missing/Damaged') +
         '</button>' +
         '<span class="cbt-afa-action-copy" id="cbt-afa-missing-copy">' +
           (missingCandidates.length
-            ? 'Checking warning rows in Tasks plus every Problem Solve row. The button enables if a real MISSING or DAMAGED package is found.'
+            ? 'Click to check warning rows in Tasks plus every Problem Solve row. No hidden page opens until you click.'
             : 'No readable task IDs are available in Tasks or Problem Solve right now. This button is disabled.') +
         '</span>' +
       '</div>';
@@ -7664,30 +7915,6 @@
       cbtScheduleUiScale();
     }
 
-    if (missingCandidates.length) {
-      cbtAfterFirstPaint(function(){
-        cbtIdle(function(){
-          if (!missingCheckActive()) return;
-
-          afaFindAllMissingJobs(missingCandidates, function(done, total, item){
-            if (!missingCheckActive()) return;
-
-            var copy = document.getElementById('cbt-afa-missing-copy');
-            if (copy) {
-              copy.textContent = 'Checking ' + (item.section || 'Tasks') +
-                ' · ' + done + ' of ' + total + '…';
-            }
-          }, missingCheckActive, true).then(function(info){
-            setMissingMenuState(info || null, true);
-          }).catch(function(){
-            setMissingMenuState(null, true);
-          });
-        }, 350);
-      }, 30);
-    } else {
-      setMissingMenuState(null, true);
-    }
-
     /* Refresh immediately before every run. This avoids stale closures after
        changing Live/Today/Weekly/Fastest/Names tabs or leaving the popup open
        while the dashboard itself changes. */
@@ -7745,13 +7972,26 @@
       }
 
       if (action === 'missingqr') {
-        if (b.disabled || !afaMissingQrEntries(_afaMissingMenuInfo).length) {
+        if (b.disabled || !missingCandidates.length) return;
+        if (afaMissingQrEntries(_afaMissingMenuInfo).length) {
+          afaMissingQrResult(_afaMissingMenuInfo); return;
+        }
+        var copy = document.getElementById('cbt-afa-missing-copy');
+        if (!cbtNativeSessionRecent(60000)) {
+          if (copy) copy.textContent = 'Check paused to protect your login. Refresh the signed-in dashboard, then open Run again.';
           return;
         }
-
-        /* The action only works after one or more real MISSING packages were
-           verified. The result view shows one missing package at a time. */
-        afaMissingQrResult(_afaMissingMenuInfo);
+        b.disabled = true;
+        b.innerHTML = '<span class="cbt-afa-missing-triangle">▲</span>Checking…';
+        afaFindAllMissingJobs(missingCandidates, function(done, total, item){
+          if (!missingCheckActive()) return;
+          var progressCopy = document.getElementById('cbt-afa-missing-copy');
+          if (progressCopy) progressCopy.textContent = 'Checking ' + (item.section || 'Tasks') + ' · ' + done + ' of ' + total + '…';
+        }, missingCheckActive, true).then(function(info){
+          if (!missingCheckActive()) return;
+          setMissingMenuState(info || null, true);
+          if (afaMissingQrEntries(info).length) afaMissingQrResult(info);
+        }).catch(function(){ setMissingMenuState(null, true); });
         return;
       }
 
@@ -8952,7 +9192,19 @@
       _fastMountUntil = Date.now() + 15000;
       cbtSchedulePackageFit();
       try { ensureSortAttachment(); } catch(e0) {}
-      if (isDashboardView()) cbtQuickDashboardMount();
+      if (isDashboardView()) {
+        cbtQuickDashboardMount();
+        /* Angular may insert the mount anchor after history changes. Use one
+           bounded retry chain, cancelled by a newer route, not a new observer. */
+        var returnRoute = route, returnStarted = Date.now();
+        (function retryDashboardMount(){
+          if (lastHandledRoute !== returnRoute || !isDashboardView()) return;
+          var currentPanel = document.getElementById('cbt-panel');
+          if (currentPanel && currentPanel.isConnected) return;
+          cbtQuickDashboardMount();
+          if (Date.now() - returnStarted < 2500) setTimeout(retryDashboardMount, 100);
+        })();
+      }
       else panelHealthCheck();
       // Only mount the search UI for the final route in a rapid navigation
       // burst, after the native history callback has returned.
@@ -9064,6 +9316,7 @@
       try {
         timerWatcher.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
         injectAllTimers();
+        afaScheduleStaleCycleAutoComplete(1400);
 
         /* Visible Time Left values still tick every second. The expensive
            whole-page safety scan is only every 5s; mutations are handled
@@ -9071,7 +9324,7 @@
         setInterval(function(){ try { tickTimers(); } catch(e10) {} }, 1000);
         setInterval(function(){
           if (document.hidden || !isDashboardView()) return;
-          try { injectAllTimers(); } catch(e11) {}
+          try { injectAllTimers(); afaScheduleStaleCycleAutoComplete(700); } catch(e11) {}
         }, 5000);
       } catch(e12) {}
 
@@ -9185,4 +9438,5 @@
   }
 
 })();
+
 
