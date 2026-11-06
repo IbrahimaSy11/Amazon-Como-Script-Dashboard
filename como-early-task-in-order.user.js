@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.212
+// @version      23.9.216
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.212
+  /* LIGHTWEIGHT EDITION v23.9.216
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.212');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.216');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -259,7 +259,7 @@
       -ms-user-select: text !important; user-select: text !important;
     }
     #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn {
-
+      
       display: inline-flex !important; align-items: center; justify-content: center;
       font-size: 13px !important; line-height: 1.35 !important;
       padding: 3px 9px !important; border-radius: 5px !important;
@@ -809,7 +809,7 @@
       display: grid;
       grid-template-columns: repeat(2, 260px);
       justify-content: center;
-
+      
       column-gap: 400px;
       row-gap: 50px;
       align-items: start;
@@ -884,7 +884,7 @@
       font-size: 12px; color: var(--cb-text2); line-height: 1.55;
       padding: 8px 13px 0; }
     #cbt-ac-drop {
-      position: fixed; z-index: 2147483647;
+      position: fixed; z-index: 2147483647;   
       background: #fff; border: 1px solid var(--cb-border); border-radius: 9px;
       box-shadow: 0 12px 36px rgba(13,27,42,.28), 0 2px 8px rgba(13,27,42,.16);
       font-family: var(--cb-sans); overflow: hidden;
@@ -3321,7 +3321,7 @@
     if (!v || isNaN(v)) v = 1;
     return Math.min(2.0, Math.max(0.7, v));
   }
-
+  
   function applyTpFontScale(tp, scale) {
     if (!tp) return;
     var body = tp.querySelector('#cbt-tp-body');
@@ -5180,7 +5180,7 @@
     } catch(e) {}
     return null;
   }
-
+  
   /* Keep the panel reachable rather than boxed in: it may hang off any edge
      as long as a grabbable strip of the header stays on screen, so you can
      park it literally anywhere and still drag it back. */
@@ -6624,14 +6624,18 @@
   }
 
   function afaNearbyCartConsensus(samples) {
-    var cart = '', count = 0;
+    var counts = Object.create(null);
     for (var i = 0; i < samples.length; i++) {
       var value = afaMissingText(samples[i]).toUpperCase();
       if (!/^CART_(?!PB|.*_SLOT_)[A-Z0-9]+$/.test(value)) continue;
-      if (cart && cart !== value) return '';
-      cart = value; count++;
+      counts[value] = (counts[value] || 0) + 1;
     }
-    return count >= 2 ? cart : '';
+    var winner = '', highest = 0, tied = false;
+    Object.keys(counts).forEach(function(cart){
+      if (counts[cart] > highest) { winner = cart; highest = counts[cart]; tied = false; }
+      else if (counts[cart] === highest) tied = true;
+    });
+    return highest >= 2 && !tied ? winner : '';
   }
 
   function afaMissingInfoFromJson(root) {
@@ -6678,20 +6682,27 @@
     }
 
     walk(root, 0);
+    var problemsById = Object.create(null);
+    problemPackages.forEach(function(p){ problemsById[p.id] = p; });
     function nearby(obj, depth) {
       if (!obj || typeof obj !== 'object' || depth > 8) return;
       if (Array.isArray(obj)) {
+        /* One cart tally per package array, not one full tally for every
+           missing/damaged package. Keep task arrays isolated. */
+        var samples = [];
+        for (var si = 0; si < obj.length && si < 3000; si++) {
+          var sample = obj[si];
+          if (sample && typeof sample === 'object' &&
+              String(sample.status || sample.packageStatus || '').toUpperCase() === 'BATCHED') {
+            samples.push(afaMissingCartValue(sample.lastKnownLocation || sample.last_known_location || ''));
+          }
+        }
+        var fallback = afaNearbyCartConsensus(samples);
         for (var n = 0; n < obj.length && n < 3000; n++) {
           var status = afaMissingStatusFromObject(obj[n]);
           if (status) {
             var sid = afaMissingScannableFromObject(obj[n]);
-            var samples = obj.map(function(p){
-              if (!p || typeof p !== 'object') return '';
-              if (String(p.status || p.packageStatus || '').toUpperCase() !== 'BATCHED') return '';
-              return afaMissingCartValue(p.lastKnownLocation || p.last_known_location || '');
-            });
-            var fallback = afaNearbyCartConsensus(samples);
-            problemPackages.forEach(function(p){ if (p.id === sid) p.cart = fallback; });
+            if (problemsById[sid]) problemsById[sid].cart = fallback;
           }
           nearby(obj[n], depth + 1);
         }
@@ -6699,7 +6710,7 @@
         Object.keys(obj).forEach(function(k){ nearby(obj[k], depth + 1); });
       }
     }
-    if (!cart) nearby(root, 0);
+    nearby(root, 0);
     return {
       missingIds: missingIds,
       problemPackages: problemPackages,
@@ -6716,6 +6727,7 @@
     var cart = '';
     var seen = Object.create(null);
     var rows = [];
+    var tableCarts = new Map();
 
     try { rows = Array.prototype.slice.call(doc.querySelectorAll('tr')); } catch(e) {}
 
@@ -6756,9 +6768,11 @@
       if (sid && !seen[problemKey]) {
         seen[problemKey] = true;
         missingIds.push(sid);
+        var table = row.closest('table');
+        if (!tableCarts.has(table)) {
         var samples = [];
         for (var next = 0; next < rows.length; next++) {
-          if (rows[next].closest('table') !== row.closest('table')) continue;
+          if (rows[next].closest('table') !== table) continue;
           var following = Array.prototype.slice.call(rows[next].querySelectorAll('td'));
           if (!following[statusIdx] || afaMissingText(following[statusIdx].textContent).toUpperCase() !== 'BATCHED') continue;
           /* Location is two columns after Scannable Id in COMO's package table. */
@@ -6771,7 +6785,9 @@
           }
           samples.push(rowCart);
         }
-        problemPackages.push({ id: sid, status: packageStatus, cart: afaNearbyCartConsensus(samples) });
+        tableCarts.set(table, afaNearbyCartConsensus(samples));
+        }
+        problemPackages.push({ id: sid, status: packageStatus, cart: tableCarts.get(table) });
       }
     }
 
@@ -6831,26 +6847,26 @@
     if (!node) return false;
 
     var txt = '';
-    try { txt = afaMissingText(node.innerText || node.textContent || ''); } catch(e) {}
+    try { txt = afaMissingText(node.textContent || ''); } catch(e) {}
 
     /* Explicit package status if the dashboard ever renders it directly. */
     if (/\b(?:MISSING|DAMAGED)\b/i.test(txt)) return true;
 
     /* Current COMO alert badge can render as a warning triangle + count
        (for example ▲1 / ⚠1) rather than the literal characters A1. */
-    if (/(?:▲|⚠|❗|⛔)\s*\d*/.test(txt)) return true;
+    /* Generic triangles also mark overdue Batch Targets. They are not
+       evidence of a missing bag. Read only the dedicated package badge. */
 
     /* Keep backward compatibility with deployments that expose A1/A2 text. */
-    if (/\bA\d+\b/i.test(txt)) return true;
+    /* A33/A12 etc. are cart names, not missing-package counts. */
 
     /* Icon fonts often render no useful textContent at all. Check only a
        handful of alert-ish class names inside THIS task row. This is cheap and
        does not open any job page or start any observer. */
     try {
       if (node.querySelector(
-        '[class*="warning-sign"],[class*="warning"],' +
-        '[class*="exclamation"],[class*="triangle"],' +
-        '[class*="danger"],[class*="alert"]'
+        '[title*="missing" i],[title*="damaged" i],' +
+        '[aria-label*="missing" i],[aria-label*="damaged" i],.badge-danger'
       )) {
         return true;
       }
@@ -6859,7 +6875,7 @@
     /* Last cheap fallback for Bootstrap / FontAwesome warning icons. */
     try {
       var html = String(node.innerHTML || '');
-      if (/glyphicon-(?:warning-sign|exclamation-sign)|fa-(?:exclamation|triangle-exclamation|exclamation-triangle)|warning-sign|exclamation-triangle/i.test(html)) {
+      if (/Task has missing or damaged packages/i.test(html)) {
         return true;
       }
     } catch(e3) {}
@@ -7039,7 +7055,7 @@
           parsed.source = 'job-json';
           /* JSON may expose missing IDs without package location fields.
              Previously that returned early and never checked the real table. */
-          if (!parsed.cart && !parsed.problemPackages.some(function(p){ return !!p.cart; })) {
+          if (!parsed.problemPackages.some(function(p){ return !!p.cart; }) && !item.cart) {
             return afaProbeMissingJobPage(item, shouldContinue).then(function(pageInfo){
               if (!pageInfo) return parsed;
               parsed.problemPackages.forEach(function(p){
@@ -7126,7 +7142,7 @@
             entries.push({
               missingId: sid,
               packageStatus: packageStatus,
-              cart: item.cart || info.cart || packages[i].cart || '',
+              cart: packages[i].cart || item.cart || info.cart || '',
               ref: info.ref || item.ref || '',
               id: info.id || item.id || '',
               section: info.section || item.section || 'Tasks'
@@ -7168,7 +7184,7 @@
       out.push({
         missingId: sid,
         packageStatus: afaMissingText(packages[i] && packages[i].status).toUpperCase() || 'MISSING',
-        cart: info.cart || packages[i].cart || '',
+        cart: packages[i].cart || info.cart || '',
         ref: info.ref || '',
         id: info.id || '',
         section: info.section || 'Tasks'
@@ -7862,7 +7878,12 @@
             : 'Checks every task section using the native Complete Task request. Previous-cycle AM/PM carts are checked automatically. Only server-approved completions count. Never Force Assigns.')
     );
 
-    var missingCandidates = afaScanMissingCandidates();
+    var missingCandidates = afaScanMissingCandidates().filter(function(item){
+      var hit = _afaMissingProbeCache.get(String(STORE_ID) + '|' + String(item.id));
+      /* A verified empty result survives closing/reopening Run. Unknown and
+         timed-out reads remain eligible; absence of data is not proof of none. */
+      return !(hit && Date.now() - hit.at < AFA_MISSING_CACHE_MS && hit.value === null);
+    });
     _afaMissingMenuInfo = null;
 
     var missingBlock =
@@ -7875,7 +7896,7 @@
         '<span class="cbt-afa-action-copy" id="cbt-afa-missing-copy">' +
           (missingCandidates.length
             ? 'Click to check warning rows in Tasks plus every Problem Solve row. No hidden page opens until you click.'
-            : 'No readable task IDs are available in Tasks or Problem Solve right now. This button is disabled.') +
+            : 'No missing/damaged candidates remain. This button is disabled; new task warnings are checked when Run opens again.') +
         '</span>' +
       '</div>';
 
@@ -7962,7 +7983,7 @@
       block.classList.add('off');
 
       if (finished) {
-        btn.innerHTML = '<span class="cbt-afa-missing-triangle">▲</span>No Missing/Damaged';
+        btn.innerHTML = '<span class="cbt-afa-missing-triangle">▲</span>Missing Package';
         copy.textContent =
           'No MISSING or DAMAGED package was found in Tasks or Problem Solve. This button is disabled.';
       }
