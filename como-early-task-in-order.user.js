@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.211
+// @version      23.9.212
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.211
+  /* LIGHTWEIGHT EDITION v23.9.212
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.211');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.212');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -6796,6 +6796,17 @@
 
     var cachedJob = _afaJobInfo[id];
     var dashboardCart = '';
+    /* Problem Solve uses dropped-job-card, not job-card. Its live markup
+       has Id, Route, Cart/s as the first three direct columns. Never scan
+       arbitrary row text: the route number is not the cart number. */
+    var droppedRow = a.closest('.dropped-job-card');
+    if (droppedRow && section === 'Problem Solve') {
+      var droppedCols = droppedRow.querySelectorAll(':scope > div[class*="col-"]');
+      var droppedLabel = droppedCols[2] ? afaMissingText(droppedCols[2].textContent) : '';
+      if (/^(?:CART_)?[A-Z]*\d+$/i.test(droppedLabel)) {
+        dashboardCart = /^CART_/i.test(droppedLabel) ? droppedLabel : 'CART_' + droppedLabel;
+      }
+    }
     var host = a.closest('job-card');
     var row = host && host.querySelector('div.row');
     var heading = document.querySelector('div.row.job-card-header');
