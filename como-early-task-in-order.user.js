@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.206
+// @version      23.9.211
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.206
+  /* LIGHTWEIGHT EDITION v23.9.211
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.206');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.211');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -259,7 +259,7 @@
       -ms-user-select: text !important; user-select: text !important;
     }
     #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn {
-      
+
       display: inline-flex !important; align-items: center; justify-content: center;
       font-size: 13px !important; line-height: 1.35 !important;
       padding: 3px 9px !important; border-radius: 5px !important;
@@ -734,13 +734,15 @@
     /* The Missing action has a longer label than the other actions. Give its
        grid column enough room so "Check Missing Package QR" is never clipped. */
     #cbt-afa-missing-block {
-      grid-template-columns: 218px minmax(0, 1fr);
+      grid-template-columns: 175px minmax(0, 1fr);
     }
     #cbt-afa-missing-block .cbt-afa-missing-btn {
-      width: 218px !important;
-      min-width: 218px !important;
-      max-width: 218px !important;
-      white-space: nowrap !important;
+      width: 175px !important;
+      min-width: 175px !important;
+      max-width: 175px !important;
+      white-space: normal !important;
+      line-height: 1.2 !important;
+      overflow: visible !important;
     }
     .cbt-afa-missing-btn:hover {
       background: #b3261e !important;
@@ -807,7 +809,7 @@
       display: grid;
       grid-template-columns: repeat(2, 260px);
       justify-content: center;
-      
+
       column-gap: 400px;
       row-gap: 50px;
       align-items: start;
@@ -882,7 +884,7 @@
       font-size: 12px; color: var(--cb-text2); line-height: 1.55;
       padding: 8px 13px 0; }
     #cbt-ac-drop {
-      position: fixed; z-index: 2147483647;   
+      position: fixed; z-index: 2147483647;
       background: #fff; border: 1px solid var(--cb-border); border-radius: 9px;
       box-shadow: 0 12px 36px rgba(13,27,42,.28), 0 2px 8px rgba(13,27,42,.16);
       font-family: var(--cb-sans); overflow: hidden;
@@ -3319,7 +3321,7 @@
     if (!v || isNaN(v)) v = 1;
     return Math.min(2.0, Math.max(0.7, v));
   }
-  
+
   function applyTpFontScale(tp, scale) {
     if (!tp) return;
     var body = tp.querySelector('#cbt-tp-body');
@@ -5178,7 +5180,7 @@
     } catch(e) {}
     return null;
   }
-  
+
   /* Keep the panel reachable rather than boxed in: it may hang off any edge
      as long as a grabbable strip of the header stays on screen, so you can
      park it literally anywhere and still drag it back. */
@@ -6683,7 +6685,7 @@
           var status = afaMissingStatusFromObject(obj[n]);
           if (status) {
             var sid = afaMissingScannableFromObject(obj[n]);
-            var samples = obj.slice(n + 1, n + 6).map(function(p){
+            var samples = obj.map(function(p){
               if (!p || typeof p !== 'object') return '';
               if (String(p.status || p.packageStatus || '').toUpperCase() !== 'BATCHED') return '';
               return afaMissingCartValue(p.lastKnownLocation || p.last_known_location || '');
@@ -6755,13 +6757,19 @@
         seen[problemKey] = true;
         missingIds.push(sid);
         var samples = [];
-        for (var next = i + 1; next < rows.length && next <= i + 5; next++) {
-          if (rows[next].closest('table') !== row.closest('table')) break;
+        for (var next = 0; next < rows.length; next++) {
+          if (rows[next].closest('table') !== row.closest('table')) continue;
           var following = Array.prototype.slice.call(rows[next].querySelectorAll('td'));
           if (!following[statusIdx] || afaMissingText(following[statusIdx].textContent).toUpperCase() !== 'BATCHED') continue;
           /* Location is two columns after Scannable Id in COMO's package table. */
-          var locationCell = following[statusIdx + 3];
-          samples.push(locationCell ? afaMissingCartValue(locationCell.textContent) : '');
+          /* Read the CART value from the BATCHED row itself: some COMO
+             tables include a separate row-number/icon cell, shifting indexes. */
+          var rowCart = '';
+          for (var fc = 0; fc < following.length; fc++) {
+            var candidate = afaMissingText(following[fc].textContent);
+            if (/^CART_[A-Z0-9]+$/i.test(candidate) && !/^CART_PB/i.test(candidate)) rowCart = candidate;
+          }
+          samples.push(rowCart);
         }
         problemPackages.push({ id: sid, status: packageStatus, cart: afaNearbyCartConsensus(samples) });
       }
@@ -6787,10 +6795,21 @@
     if (!id) return null;
 
     var cachedJob = _afaJobInfo[id];
+    var dashboardCart = '';
+    var host = a.closest('job-card');
+    var row = host && host.querySelector('div.row');
+    var heading = document.querySelector('div.row.job-card-header');
+    if (row && heading) {
+      var cols = Array.from(row.querySelectorAll(':scope > div[class*="col-"]')).filter(function(c){ return !c.classList.contains('etf-col-cell'); });
+      var labels = Array.from(heading.querySelectorAll(':scope > div[class*="col-"]')).filter(function(c){ return !c.classList.contains('etf-col-cell'); });
+      var ci = labels.findIndex(function(c){ return /^Cart(?:\/s|s)?$/i.test(afaMissingText(c.textContent)); });
+      var label = ci >= 0 && cols[ci] ? afaMissingText(cols[ci].textContent) : '';
+      if (/^(?:CART_)?[A-Z]*\d+$/i.test(label)) dashboardCart = /^CART_/i.test(label) ? label : 'CART_' + label;
+    }
     return {
       ref: ref,
       id: id,
-      cart: cachedJob && cachedJob.assignedCart || '',
+      cart: dashboardCart || cachedJob && cachedJob.assignedCart || '',
       section: section || 'Tasks',
       alertScore: Number(baseScore) || 0,
       domOrder: Number(order) || 0
@@ -7007,6 +7026,18 @@
           parsed.id = item.id;
           parsed.section = item.section || 'Tasks';
           parsed.source = 'job-json';
+          /* JSON may expose missing IDs without package location fields.
+             Previously that returned early and never checked the real table. */
+          if (!parsed.cart && !parsed.problemPackages.some(function(p){ return !!p.cart; })) {
+            return afaProbeMissingJobPage(item, shouldContinue).then(function(pageInfo){
+              if (!pageInfo) return parsed;
+              parsed.problemPackages.forEach(function(p){
+                var match = (pageInfo.problemPackages || []).find(function(q){ return q.id === p.id; });
+                if (match && match.cart) p.cart = match.cart;
+              });
+              return parsed;
+            });
+          }
           return parsed;
         }
 
@@ -7084,7 +7115,7 @@
             entries.push({
               missingId: sid,
               packageStatus: packageStatus,
-              cart: info.cart || packages[i].cart || '',
+              cart: item.cart || info.cart || packages[i].cart || '',
               ref: info.ref || item.ref || '',
               id: info.id || item.id || '',
               section: info.section || item.section || 'Tasks'
@@ -7357,6 +7388,7 @@
   var _afaStaleCycleRunning = false;
   var _afaStaleCycleAttempts = new Map();
   var _afaStaleCycleStore = '';
+  var _afaStaleCycleLastScanAt = 0;
 
   function afaIsOppositePeriodStale(targetMs, targetPeriod, nowMs, currentHour) {
     targetMs = Number(targetMs);
@@ -7413,12 +7445,22 @@
     if (_afaStaleCycleStore !== STORE_ID) {
       _afaStaleCycleStore = STORE_ID;
       _afaStaleCycleAttempts.clear();
+      _afaStaleCycleLastScanAt = 0;
     }
     var now = Date.now();
+    /* Angular progress updates can arrive continuously. The old-cart rule
+       changes on an hours-long scale, so never rescan on every row mutation. */
+    if (now - _afaStaleCycleLastScanAt < 30000) return;
+    _afaStaleCycleLastScanAt = now;
     _afaStaleCycleAttempts.forEach(function(value, key){
       if (!value || now - value.at > 36 * 60 * 60 * 1000) _afaStaleCycleAttempts.delete(key);
     });
-    var queue = afaScanStaleCycleCandidates().filter(function(item){
+    var oldSectionMemo = _cbtSectionMemo, oldSiblingMemo = _cbtSiblingMemo;
+    _cbtSectionMemo = new WeakMap(); _cbtSiblingMemo = new WeakMap();
+    var candidates;
+    try { candidates = afaScanStaleCycleCandidates(); }
+    finally { _cbtSectionMemo = oldSectionMemo; _cbtSiblingMemo = oldSiblingMemo; }
+    var queue = candidates.filter(function(item){
       var prior = _afaStaleCycleAttempts.get(item.id);
       return !prior || (!prior.ok && now - prior.at >= AFA_STALE_CYCLE_RETRY_MS);
     });
@@ -7447,6 +7489,7 @@
 
   function afaScheduleStaleCycleAutoComplete(delay) {
     if (_afaStaleCycleTimer || _afaStaleCycleRunning || !isDashboardView()) return;
+    if (_afaStaleCycleStore === STORE_ID && Date.now() - _afaStaleCycleLastScanAt < 30000) return;
     _afaStaleCycleTimer = setTimeout(afaRunStaleCycleAutoComplete, Math.max(250, Number(delay) || 700));
   }
 
@@ -7816,7 +7859,7 @@
         '<button type="button" class="cbt-afa-act cbt-afa-action-btn cbt-afa-missing-btn" ' +
           'id="cbt-afa-missing-btn" data-afa="missingqr"' + (missingCandidates.length ? '' : ' disabled') + '>' +
           '<span class="cbt-afa-missing-triangle">▲</span>' +
-          (missingCandidates.length ? 'Check Missing Package QR' : 'No Missing/Damaged') +
+          'Missing Package' +
         '</button>' +
         '<span class="cbt-afa-action-copy" id="cbt-afa-missing-copy">' +
           (missingCandidates.length
@@ -7882,7 +7925,7 @@
       if (verifiedEntries.length) {
         _afaMissingMenuInfo = info;
         btn.disabled = false;
-        btn.innerHTML = '<span class="cbt-afa-missing-triangle">▲</span>Missing Package QR';
+        btn.innerHTML = '<span class="cbt-afa-missing-triangle">▲</span>Missing Package';
         block.classList.remove('off');
         var damagedCount = verifiedEntries.filter(function(entry){
           return afaMissingText(entry.packageStatus).toUpperCase() === 'DAMAGED';
