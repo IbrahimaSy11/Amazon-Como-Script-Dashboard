@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.216
+// @version      23.9.217
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.216
+  /* LIGHTWEIGHT EDITION v23.9.217
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.216');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.217');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -6794,6 +6794,15 @@
     return { missingIds: missingIds, problemPackages: problemPackages, cart: cart };
   }
 
+  function afaDashboardCartLabel(label) {
+    /* Cart/s can be a comma-separated list (L1260,L730). Use the first
+       displayed cart as the dashboard fallback; package frequency can still
+       select the dominant cart when that richer data is available. */
+    var first = afaMissingText(label).split(/[,;\n]/)[0].trim().toUpperCase();
+    if (!/^(?:CART_)?[A-Z]*\d+$/.test(first)) return '';
+    return first.indexOf('CART_') === 0 ? first : 'CART_' + first;
+  }
+
   function afaMissingCandidateFromAnchor(a, section, order, baseScore) {
     if (!a) return null;
 
@@ -6819,9 +6828,7 @@
     if (droppedRow && section === 'Problem Solve') {
       var droppedCols = droppedRow.querySelectorAll(':scope > div[class*="col-"]');
       var droppedLabel = droppedCols[2] ? afaMissingText(droppedCols[2].textContent) : '';
-      if (/^(?:CART_)?[A-Z]*\d+$/i.test(droppedLabel)) {
-        dashboardCart = /^CART_/i.test(droppedLabel) ? droppedLabel : 'CART_' + droppedLabel;
-      }
+      dashboardCart = afaDashboardCartLabel(droppedLabel);
     }
     var host = a.closest('job-card');
     var row = host && host.querySelector('div.row');
@@ -6831,7 +6838,7 @@
       var labels = Array.from(heading.querySelectorAll(':scope > div[class*="col-"]')).filter(function(c){ return !c.classList.contains('etf-col-cell'); });
       var ci = labels.findIndex(function(c){ return /^Cart(?:\/s|s)?$/i.test(afaMissingText(c.textContent)); });
       var label = ci >= 0 && cols[ci] ? afaMissingText(cols[ci].textContent) : '';
-      if (/^(?:CART_)?[A-Z]*\d+$/i.test(label)) dashboardCart = /^CART_/i.test(label) ? label : 'CART_' + label;
+      dashboardCart = afaDashboardCartLabel(label) || dashboardCart;
     }
     return {
       ref: ref,
