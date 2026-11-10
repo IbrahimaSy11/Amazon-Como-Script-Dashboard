@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.217
+// @version      23.9.218
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.217
+  /* LIGHTWEIGHT EDITION v23.9.218
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.217');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.218');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -5915,6 +5915,8 @@
         if (!_afaJobInfo[id]) _afaJobInfo[id] = { ref: ref, assignability: null };
         _afaJobInfo[id].ref = ref;
         _afaJobInfo[id].lastSeen = Date.now();
+        _afaJobInfo[id].canComplete = afaCompletionCapability(obj);
+        _afaJobInfo[id].completionCheckedAt = Date.now();
         if (asg) _afaJobInfo[id].assignability = asg;
         var assignedCart = afaAssignedCartFromJson(obj);
         if (assignedCart) _afaJobInfo[id].assignedCart = assignedCart;
@@ -7538,6 +7540,24 @@
 
   /* An explicitly empty main Tasks section blocks Auto Complete, even when
      aggregate totals or side sections still contain job links. */
+  function afaCompletionCapability(job) {
+    if (!job || typeof job !== 'object') return null;
+    var keys = ['canComplete','canCompleteTask','canCompleteJob',
+      'completeTaskEnabled','completeJobEnabled','completionEligible','completable'];
+    var allowed = false;
+    for (var i = 0; i < keys.length; i++) {
+      if (job[keys[i]] === false) return false;
+      if (job[keys[i]] === true) allowed = true;
+    }
+    return allowed ? true : null;
+  }
+
+  function afaCompletionEligible(item) {
+    var cached = item && _afaJobInfo[item.id];
+    return !!(cached && cached.canComplete === true &&
+      Date.now() - cached.completionCheckedAt < 30000);
+  }
+
   function afaScanCompletionCandidates() {
     // Anchoring excludes the aggregate "Tasks (14):" status heading.
     if (afaSectionCount(/^Tasks\s*\(\d+\)\s*$/i) === 0) return [];
@@ -7835,7 +7855,7 @@
 
     var completionCandidates = afaScanCompletionCandidates()
       .filter(function(x){ return !isSuppressed('complete', x); });
-    var completeReady = completionCandidates.filter(function(x){ return x.id; });
+    var completeReady = completionCandidates.filter(function(x){ return x.id && afaCompletionEligible(x); });
 
     var forceDisabled   = ready.length === 0;
     var partialDisabled = pbReady.length === 0;
@@ -7881,7 +7901,7 @@
       !AFA_COMPLETE_PATH
         ? 'Unavailable: the Complete Task request is not configured.'
         : (completeDisabled
-            ? 'No tasks available to Auto Complete.'
+            ? 'No carts are currently verified eligible for completion. Unknown eligibility stays disabled.'
             : 'Checks every task section using the native Complete Task request. Previous-cycle AM/PM carts are checked automatically. Only server-approved completions count. Never Force Assigns.')
     );
 
@@ -8026,7 +8046,7 @@
           opts = { mode: 'partial', autoComplete: false, completeOnly: false };
         } else if (action === 'complete') {
           queue = afaFilterCurrentCompletionTasks(afaScanCompletionCandidates(),payload)
-            .filter(function(x){ return x.id && !isSuppressed('complete', x); });
+            .filter(function(x){ return x.id && afaCompletionEligible(x) && !isSuppressed('complete', x); });
           opts = { mode: 'complete', autoComplete: true, completeOnly: true };
         }
 
