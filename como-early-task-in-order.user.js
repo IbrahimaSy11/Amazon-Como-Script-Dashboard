@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.218
+// @version      23.9.219
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.218
+  /* LIGHTWEIGHT EDITION v23.9.219
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.218');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.219');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -259,7 +259,7 @@
       -ms-user-select: text !important; user-select: text !important;
     }
     #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn {
-      
+
       display: inline-flex !important; align-items: center; justify-content: center;
       font-size: 13px !important; line-height: 1.35 !important;
       padding: 3px 9px !important; border-radius: 5px !important;
@@ -809,7 +809,7 @@
       display: grid;
       grid-template-columns: repeat(2, 260px);
       justify-content: center;
-      
+
       column-gap: 400px;
       row-gap: 50px;
       align-items: start;
@@ -884,7 +884,7 @@
       font-size: 12px; color: var(--cb-text2); line-height: 1.55;
       padding: 8px 13px 0; }
     #cbt-ac-drop {
-      position: fixed; z-index: 2147483647;   
+      position: fixed; z-index: 2147483647;
       background: #fff; border: 1px solid var(--cb-border); border-radius: 9px;
       box-shadow: 0 12px 36px rgba(13,27,42,.28), 0 2px 8px rgba(13,27,42,.16);
       font-family: var(--cb-sans); overflow: hidden;
@@ -3321,7 +3321,7 @@
     if (!v || isNaN(v)) v = 1;
     return Math.min(2.0, Math.max(0.7, v));
   }
-  
+
   function applyTpFontScale(tp, scale) {
     if (!tp) return;
     var body = tp.querySelector('#cbt-tp-body');
@@ -5180,7 +5180,7 @@
     } catch(e) {}
     return null;
   }
-  
+
   /* Keep the panel reachable rather than boxed in: it may hang off any edge
      as long as a grabbable strip of the header stays on screen, so you can
      park it literally anywhere and still drag it back. */
@@ -6673,7 +6673,8 @@
         if (sid && !seenProblem[problemKey]) {
           seenProblem[problemKey] = true;
           missingIds.push(sid);
-          problemPackages.push({ id: sid, status: packageStatus });
+          problemPackages.push({ id: sid, status: packageStatus,
+            location: afaMissingText(obj.lastKnownLocation || obj.last_known_location || '') });
         }
       }
 
@@ -6789,7 +6790,8 @@
         }
         tableCarts.set(table, afaNearbyCartConsensus(samples));
         }
-        problemPackages.push({ id: sid, status: packageStatus, cart: tableCarts.get(table) });
+        problemPackages.push({ id: sid, status: packageStatus, cart: tableCarts.get(table),
+          location: cells[statusIdx + 3] ? afaMissingText(cells[statusIdx + 3].textContent) : '' });
       }
     }
 
@@ -7070,6 +7072,7 @@
               parsed.problemPackages.forEach(function(p){
                 var match = (pageInfo.problemPackages || []).find(function(q){ return q.id === p.id; });
                 if (match && match.cart) p.cart = match.cart;
+                if (match && match.location) p.location = match.location;
               });
               return parsed;
             });
@@ -7152,6 +7155,7 @@
               missingId: sid,
               packageStatus: packageStatus,
               cart: packages[i].cart || item.cart || info.cart || '',
+              location: afaMissingText(packages[i].location),
               ref: info.ref || item.ref || '',
               id: info.id || item.id || '',
               section: info.section || item.section || 'Tasks'
@@ -7194,6 +7198,7 @@
         missingId: sid,
         packageStatus: afaMissingText(packages[i] && packages[i].status).toUpperCase() || 'MISSING',
         cart: packages[i].cart || info.cart || '',
+        location: afaMissingText(packages[i].location),
         ref: info.ref || '',
         id: info.id || '',
         section: info.section || 'Tasks'
@@ -7323,6 +7328,8 @@
         : 'The assigned task cart could not be verified, so only the ' + packageKind.toLowerCase() + ' QR is shown.';
 
       stage.innerHTML =
+        '<div class="cbt-missing-package-location" style="text-align:center;margin:8px 0;font-size:14px;color:inherit;overflow-wrap:anywhere">Last Known Location: <b>' +
+          afaEsc(entry.location || 'Not available') + '</b></div>' +
         '<div class="cbt-missing-qr-summary">' +
           afaEsc(entry.section || 'Tasks') + ' · Task <b>' +
           afaEsc(entry.ref || '') + '</b> · ' + afaEsc(note) +
