@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.219
+// @version      23.9.220
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.219
+  /* LIGHTWEIGHT EDITION v23.9.220
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.219');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.220');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -7252,6 +7252,7 @@
     '</div>';
   }
 
+  var _afaMissingLiveStop = null;
   function afaMissingQrResult(info) {
     var entries = afaMissingQrEntries(info);
 
@@ -7352,6 +7353,54 @@
     }
 
     renderCurrent();
+
+    // One read-only JSON request at a time, only while this view is open.
+    // Never load hidden copies of COMO in the automatic refresh path.
+    var liveStopped = false, liveTimer = null, liveBusy = false;
+    var liveChecked = new Map(), liveStore = String(STORE_ID);
+    function liveActive() {
+      return !liveStopped && card.isConnected && String(STORE_ID) === liveStore;
+    }
+    _afaMissingLiveStop = function() {
+      liveStopped = true;
+      clearTimeout(liveTimer);
+    };
+    function scheduleLive() {
+      if (liveActive()) liveTimer = setTimeout(refreshLive, 2500);
+    }
+    function refreshLive() {
+      if (!liveActive()) return;
+      if (document.hidden || liveBusy || !cbtNativeSessionRecent(60000)) { scheduleLive(); return; }
+      var now = Date.now();
+      var candidates = afaScanMissingCandidates();
+      var item = candidates.find(function(candidate) {
+        return candidate.id && now - (liveChecked.get(candidate.id) || 0) >= 15000;
+      });
+      if (!item) { scheduleLive(); return; }
+      liveChecked.set(item.id, now);
+      liveBusy = true;
+      afaFetchJobInfo(item.id).then(function(payload) {
+        if (!liveActive() || !payload) return;
+        var parsed = afaMissingInfoFromJson(payload);
+        parsed.cart = parsed.cart || item.cart || '';
+        parsed.id = item.id;
+        parsed.ref = item.ref;
+        parsed.section = item.section;
+        var additions = afaMissingQrEntries(parsed);
+        var changed = false;
+        additions.forEach(function(entry) {
+          var existing = entries.find(function(old) {
+            return old.id === entry.id && old.missingId === entry.missingId;
+          });
+          if (!existing) { entries.push(entry); changed = true; }
+        });
+        // Keep the selected entry and only redraw when a new ID was added.
+        if (changed) renderCurrent();
+      }).catch(function() {
+        // Keep the current QR usable during transient network failures.
+      }).then(function() { liveBusy = false; scheduleLive(); });
+    }
+    scheduleLive();
 
     function moveMissingQr(direction) {
       var nextIndex = currentIndex + direction;
@@ -7734,6 +7783,7 @@
   }
 
   function afaClose() {
+    if (_afaMissingLiveStop) { _afaMissingLiveStop(); _afaMissingLiveStop = null; }
     /* Hiding the view never cancels the independent action queue. */
     _afaMissingMenuInfo = null;
     _afaMissingMenuCheckSeq++;
@@ -7745,6 +7795,7 @@
     else { _afaRunState=null; afaSetBtn('▶ Run', false); }
   }
   function afaShell(title, bodyHtml, footHtml) {
+    if (_afaMissingLiveStop) { _afaMissingLiveStop(); _afaMissingLiveStop = null; }
     var runButton = document.getElementById('cbt-afa-btn');
     if (runButton) runButton.setAttribute('aria-expanded','true');
     // Switching to another view invalidates read-only menu discovery, but
