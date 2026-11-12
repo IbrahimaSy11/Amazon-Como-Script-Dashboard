@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.220
+// @version      23.9.221
 // @description  Auth-safe lightweight summary, Run actions, task order, Time Left, QR and name suggestions
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  /* LIGHTWEIGHT EDITION v23.9.220
+  /* LIGHTWEIGHT EDITION v23.9.221
      Header + five summary counters + Run; fixed dark screenshot appearance.
      No lower tabbed dashboard, profile UI, resize arrows, or theme toggle.
      Assignment name suggestions, new-name capture and name sync remain.
@@ -38,7 +38,7 @@
   /* A second installation must not stack network hooks and observers. */
   if (document.documentElement.hasAttribute('data-cbt-runtime-v23985')) return;
   document.documentElement.setAttribute('data-cbt-runtime-v23985', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.220');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.221');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -259,7 +259,7 @@
       -ms-user-select: text !important; user-select: text !important;
     }
     #cbt-afa-btn, #cbt-panel.dark #cbt-afa-btn {
-
+      
       display: inline-flex !important; align-items: center; justify-content: center;
       font-size: 13px !important; line-height: 1.35 !important;
       padding: 3px 9px !important; border-radius: 5px !important;
@@ -809,7 +809,7 @@
       display: grid;
       grid-template-columns: repeat(2, 260px);
       justify-content: center;
-
+      
       column-gap: 400px;
       row-gap: 50px;
       align-items: start;
@@ -884,7 +884,7 @@
       font-size: 12px; color: var(--cb-text2); line-height: 1.55;
       padding: 8px 13px 0; }
     #cbt-ac-drop {
-      position: fixed; z-index: 2147483647;
+      position: fixed; z-index: 2147483647;   
       background: #fff; border: 1px solid var(--cb-border); border-radius: 9px;
       box-shadow: 0 12px 36px rgba(13,27,42,.28), 0 2px 8px rgba(13,27,42,.16);
       font-family: var(--cb-sans); overflow: hidden;
@@ -3321,7 +3321,7 @@
     if (!v || isNaN(v)) v = 1;
     return Math.min(2.0, Math.max(0.7, v));
   }
-
+  
   function applyTpFontScale(tp, scale) {
     if (!tp) return;
     var body = tp.querySelector('#cbt-tp-body');
@@ -5180,7 +5180,7 @@
     } catch(e) {}
     return null;
   }
-
+  
   /* Keep the panel reachable rather than boxed in: it may hang off any edge
      as long as a grabbable strip of the header stays on screen, so you can
      park it literally anywhere and still drag it back. */
@@ -7911,13 +7911,8 @@
     var pbFound = (pbExpected != null) ? Math.max(pbExpected, pbAll.length) : pbAll.length;
     var pbUnresolved = Math.max(0, pbFound - pbReady.length);
 
-    var completionCandidates = afaScanCompletionCandidates()
-      .filter(function(x){ return !isSuppressed('complete', x); });
-    var completeReady = completionCandidates.filter(function(x){ return x.id && afaCompletionEligible(x); });
-
     var forceDisabled   = ready.length === 0;
     var partialDisabled = pbReady.length === 0;
-    var completeDisabled = !AFA_COMPLETE_PATH || completeReady.length === 0;
 
     function actionBlock(action, label, count, disabled, copy) {
       return '<div class="cbt-afa-action-block' + (disabled ? ' off' : '') + '">' +
@@ -7949,18 +7944,6 @@
             ? 'No Partially Batched cart has a readable task ID yet.'
             : 'No Partially Batched carts are available right now.')
         : 'Runs only Partially Batched carts. Each one is verified before Force Assign.'
-    );
-
-    var completeBlock = actionBlock(
-      'complete',
-      '▶ Auto Complete',
-      completeReady.length,
-      completeDisabled,
-      !AFA_COMPLETE_PATH
-        ? 'Unavailable: the Complete Task request is not configured.'
-        : (completeDisabled
-            ? 'No carts are currently verified eligible for completion. Unknown eligibility stays disabled.'
-            : 'Checks every task section using the native Complete Task request. Previous-cycle AM/PM carts are checked automatically. Only server-approved completions count. Never Force Assigns.')
     );
 
     var missingCandidates = afaScanMissingCandidates().filter(function(item){
@@ -8007,7 +7990,6 @@
       '<div id="cbt-afa-lead">Choose an action. Each button performs <b>only the action shown</b>.</div>' +
       forceBlock +
       partialBlock +
-      completeBlock +
       missingBlock +
       warnings +
       listHtml +
@@ -8088,7 +8070,7 @@
 
       /* Refresh silently. The old visible "Checking..." state looked like a
          second loader after the user had already chosen an action. */
-      (action==='complete'?afaRefreshCompletionData():afaRefreshJobData()).then(function(payload){
+      afaRefreshJobData().then(function(){
         if (_afaStop) {_afaRunning=false;afaSetBtn('▶ Run',false);afaSummary([],true,0,action);return;}
 
         var queue = [];
@@ -8102,10 +8084,6 @@
           queue = afaScanPartiallyBatched()
             .filter(function(x){ return x.id && !isSuppressed('partial', x); });
           opts = { mode: 'partial', autoComplete: false, completeOnly: false };
-        } else if (action === 'complete') {
-          queue = afaFilterCurrentCompletionTasks(afaScanCompletionCandidates(),payload)
-            .filter(function(x){ return x.id && afaCompletionEligible(x) && !isSuppressed('complete', x); });
-          opts = { mode: 'complete', autoComplete: true, completeOnly: true };
         }
 
         if (!queue.length) {
@@ -8155,7 +8133,7 @@
         return;
       }
 
-      if (action === 'force' || action === 'partial' || action === 'complete') {
+      if (action === 'force' || action === 'partial') {
         runFresh(action, b);
       }
     });
