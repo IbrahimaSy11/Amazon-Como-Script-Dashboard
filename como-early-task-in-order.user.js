@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.236
+// @version      23.9.237
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -37,9 +37,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v23999')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v23999', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.236');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399A')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399A', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.237');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -164,13 +164,17 @@
       content: ''; display: inline-block; width: 3px; height: 18px;
       background: var(--cb-blue); border-radius: 2px;
     }
-    /* v23.9.236: branding — "Dashboard made by Ibrahsyw", link opens the
+    /* v23.9.237: branding — "DASHBOARD MADE BY IBRAHSYW", link opens the
        author's Engage page in a new tab. Readable in light and dark mode. */
     .cbt-brand { font-size: 12px; font-weight: 600; color: #5a7a96; white-space: nowrap; }
     .cbt-brand-link { color: #2979ff; font-weight: 700; text-decoration: underline; }
     #cbt-panel.dark .cbt-brand { color: #9ecbff; }
     #cbt-panel.dark .cbt-brand-link { color: #58a6ff; }
     .cbt-brand-footer { display: block; text-align: center; padding: 8px 0 10px; }
+    /* v23.9.237: branding row at the bottom of the suggestions dropdown.
+       The dropdown is NOT inside #cbt-panel, so the panel-scoped dark
+       rules below do not reach it — it gets its own dark rules. */
+    .cbt-brand-ac { display: block; text-align: center; padding: 8px 10px; border-top: 1px solid var(--cb-border); background: #f8fafc; }
     #cbt-profile-card .cbt-brand { flex-shrink: 0; }
     #cbt-profile-overlay.dark #cbt-profile-card .cbt-brand { color: #9ecbff; }
     #cbt-profile-overlay.dark #cbt-profile-card .cbt-brand-link { color: #58a6ff; }
@@ -819,6 +823,9 @@
     #cbt-ac-drop.cbt-dark .cbt-ac-foot {
       background: #161b22; border-top-color: #21262d; color: #6e7b8d;
     }
+    #cbt-ac-drop.cbt-dark .cbt-brand { color: #9ecbff; }
+    #cbt-ac-drop.cbt-dark .cbt-brand-link { color: #58a6ff; }
+    #cbt-ac-drop.cbt-dark .cbt-brand-ac { background: #161b22; border-top-color: #21262d; }
 
     /* QR popup stays plain white in both themes — never themed, never scaled */
     #cbt-qr-card { background: #FFFFFF !important; }
@@ -3709,8 +3716,8 @@
      saver keeps recording; only the open panel is turned off. Returning to
      /dash never re-opens it — exactly like a reload. */
   /* ══════════════════════════════════════
-     v23.9.236 — BRANDING, tamper-resistant while running.
-     Text (exact): "Dashboard made by Ibrahsyw". The name links to the
+     v23.9.237 — BRANDING, tamper-resistant while running.
+     Text (exact): "DASHBOARD MADE BY IBRAHSYW". The name links to the
      author's Amazon Engage page and opens in a NEW tab (target=_blank),
      so it never navigates the COMO tab away.
      Honest limit: anyone who has the .user.js FILE can edit its text —
@@ -3723,11 +3730,16 @@
      node is removed or its text/href changes. The observer only repairs
      branding — it never re-renders tabs or data — and the check is
      throttled to at most once per second, so it cannot cause lag.
-     The branding lives in three places so it is visible from every
+     The branding lives in four places so it is visible from every
      angle: (a) the panel header — always shown, open or collapsed;
-     (b) the panel body footer; (c) the associate profile card header. */
-  var CBT_BRAND_TEXT = 'Dashboard made by Ibrahsyw';
-  var CBT_BRAND_NAME = 'Ibrahsyw';
+     (b) the panel body footer; (c) the associate profile card header;
+     (d) the associate-suggestions dropdown (v23.9.237) — the shared
+     #cbt-ac-drop used by the COMO Manager Action dialog and the Outbound
+     assign modal. v23.9.237 also capitalises the text everywhere:
+     "DASHBOARD MADE BY IBRAHSYW". Associate IDs and names in suggestion
+     rows are NOT capitalised — capitalising a login would break assignment. */
+  var CBT_BRAND_TEXT = 'DASHBOARD MADE BY IBRAHSYW';
+  var CBT_BRAND_NAME = 'IBRAHSYW';
   var CBT_BRAND_URL = 'https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview';
   function cbtBrandLinkEl() {
     var a = document.createElement('a');
@@ -3742,7 +3754,7 @@
     var s = document.createElement('span');
     s.className = cls;
     s.setAttribute('data-cbt-brand', '1');
-    s.appendChild(document.createTextNode('Dashboard made by '));
+    s.appendChild(document.createTextNode('DASHBOARD MADE BY '));
     s.appendChild(cbtBrandLinkEl());
     return s;
   }
@@ -3815,6 +3827,22 @@
           cbtBrandGuardLink(ph);
         }
       }
+      /* v23.9.237: the associate-suggestions dropdown. One shared element
+         (#cbt-ac-drop) serves both dialogs that show suggestions — the COMO
+         Manager Action "Assign to Associate" dialog and the Outbound assign
+         modal — so one check covers both. The dropdown is rebuilt by
+         acRender on every keystroke, which appends the brand itself; this
+         block repairs it if something else removes or alters it in between. */
+      var drop = null;
+      try { drop = document.getElementById('cbt-ac-drop'); } catch(eD) {}
+      if (drop) {
+        var b = drop.querySelector('[data-cbt-brand]');
+        if (!cbtBrandNodeIsGood(b)) {
+          if (b) { try { b.remove(); } catch(eR4) {} }
+          try { drop.appendChild(cbtBrandNode('cbt-brand cbt-brand-ac')); } catch(eA2) {}
+        }
+        cbtBrandGuardLink(drop);
+      }
     } catch(e) {}
   }
   var _cbtBrandObserver = null, _cbtBrandProfileObserver = null;
@@ -3853,6 +3881,26 @@
   function cbtStopBrandProfileObserver() {
     try { if (_cbtBrandProfileObserver) _cbtBrandProfileObserver.disconnect(); } catch(e) {}
     _cbtBrandProfileObserver = null;
+  }
+  /* v23.9.237: the suggestions dropdown lives under document.body, not
+     inside #cbt-panel, so the panel observer never sees it. It gets its
+     own observer, started by acRender when the dropdown is created and
+     stopped by acClose when the dropdown is removed. Same throttle as the
+     panel observer (cbtScheduleBrandCheck, at most once per second). */
+  var _cbtBrandAcObserver = null;
+  function cbtStartBrandAcObserver() {
+    try {
+      if (typeof MutationObserver !== 'function') return;
+      if (_cbtBrandAcObserver) { try { _cbtBrandAcObserver.disconnect(); } catch(e) {} }
+      var drop = document.getElementById('cbt-ac-drop');
+      if (!drop) return;
+      _cbtBrandAcObserver = new MutationObserver(function() { cbtScheduleBrandCheck(); });
+      _cbtBrandAcObserver.observe(drop, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['href'] });
+    } catch(e) {}
+  }
+  function cbtStopBrandAcObserver() {
+    try { if (_cbtBrandAcObserver) _cbtBrandAcObserver.disconnect(); } catch(e) {}
+    _cbtBrandAcObserver = null;
   }
 
   function cbtCollapsePanelLikeReload() {
@@ -7601,7 +7649,7 @@
     panel2.innerHTML =
       '<div id="cbt-header">' +
         '<span id="cbt-title">Batcher Timers</span>' +
-        '<span class="cbt-brand" data-cbt-brand>Dashboard made by <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">Ibrahsyw</a></span>' +
+        '<span class="cbt-brand" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
         '<div id="cbt-controls">' +
           '<span id="cbt-theme-btn" title="Toggle Dark/Light">🌙</span>' +
           '<button type="button" id="cbt-afa-btn" title="Open cart actions" aria-haspopup="dialog" aria-expanded="false" aria-controls="cbt-afa-overlay">' +
@@ -7704,7 +7752,7 @@
           '<div id="cbt-hof-empty"></div>' +
           '<div id="cbt-hof-note" style="text-align:center;color:#888;padding:4px;font-size:11px;"></div>' +
         '</div>' +
-        '<span class="cbt-brand cbt-brand-footer" data-cbt-brand>Dashboard made by <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">Ibrahsyw</a></span>' +
+        '<span class="cbt-brand cbt-brand-footer" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
       '</div>' +
       '<div id="cbt-drag-bottom" title="Drag to resize"></div>';
     return panel2;
@@ -13149,6 +13197,7 @@
   }
 
   function acClose() {
+    try { cbtStopBrandAcObserver(); } catch(eAcObs) {}
     if (_acDrop && _acDrop.parentNode) _acDrop.parentNode.removeChild(_acDrop);
     _acDrop = null; _acItems = []; _acIdx = -1;
   }
@@ -13217,6 +13266,14 @@
       }
     }
     _acDrop.innerHTML = html;
+    /* v23.9.237: branding at the BOTTOM of the suggestions dropdown, after
+       the rows (and the "N more" foot when present), so it never covers a
+       suggestion row and never intercepts a row click. It is not a
+       .cbt-ac-item, so the dropdown's mousedown handler ignores it and it
+       can never be picked as an associate; its link opens the Engage page
+       in a new tab. Re-appended on every render because the innerHTML
+       rebuild above destroys it each keystroke. */
+    try { _acDrop.appendChild(cbtBrandNode('cbt-brand cbt-brand-ac')); cbtBrandGuardLink(_acDrop); cbtStartBrandAcObserver(); } catch(eBrandAc) {}
     _acDrop._cbtLogicalWidth=Math.max(320,rows.reduce(function(width,row){ return Math.max(width,String(row).length*8+110); },0));
     acPlace();
   }
@@ -14240,7 +14297,7 @@
     var overlay=document.createElement('div');overlay.id='cbt-profile-overlay';
     var dark=document.getElementById('cbt-panel');if(dark && dark.classList.contains('dark'))overlay.classList.add('dark');
     overlay.innerHTML='<section id="cbt-profile-card" role="dialog" aria-modal="true" aria-labelledby="cbt-profile-title">'+
-      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><span class="cbt-brand cbt-brand-profile" data-cbt-brand>Dashboard made by <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">Ibrahsyw</a></span><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
+      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><span class="cbt-brand cbt-brand-profile" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
       '<div class="cbt-profile-controls"><span>Period <span class="cbt-profile-period"><button type="button" data-profile-period-toggle aria-label="Profile period" aria-haspopup="menu" aria-expanded="false">Today ▾</button><span class="cbt-profile-period-menu" role="menu" aria-label="Profile period" hidden><button type="button" role="menuitemradio" data-profile-period="today" aria-checked="true">Today</button><button type="button" role="menuitemradio" data-profile-period="week" aria-checked="false">This week</button></span></span></span><span title="All rate values below use packages per minute of batching time">Rate Unit: Packages/Minute</span></div>'+
       '<div class="cbt-profile-metrics" data-profile-metrics></div><div class="cbt-profile-table-wrap"><table><thead><tr><th>Completion hour</th><th>Carts</th><th>Packages</th><th>Rate</th></tr></thead><tbody></tbody></table></div>'+
       '<p data-profile-note></p></section>';
