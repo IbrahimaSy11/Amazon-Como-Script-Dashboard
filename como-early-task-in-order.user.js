@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.234
+// @version      23.9.235
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR
 // @author       Ibrahim
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -37,9 +37,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v23997')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v23997', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.234');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v23998')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v23998', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.235');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -3681,9 +3681,14 @@
      with ▼ during the session is unchanged. */
   var _cbtPanelCollapsed = true;
   try { localStorage.setItem('cbt_panel_collapsed', '1'); } catch(e) {}
-  /* v23.9.234: collapse on switch-away, like a reload. Since v23.9.229 the
-     dashboard starts COLLAPSED on every page load; the user wants the same
-     when he switches to a different tab or navigates away from /dash.
+  /* v23.9.235: collapse on navigating away from /dash inside this tab, like
+     a reload. Since v23.9.229 the dashboard starts COLLAPSED on every page
+     load; the same happens when he clicks away from the dashboard view
+     inside COMO (a task, Packages, another section) — onRoute below calls
+     this before detachMainPanel, and returning to /dash mounts collapsed.
+     Switching to a different BROWSER tab (or opening a new tab) does NOT
+     collapse: v23.9.234 did that via a visibilitychange hide handler and
+     the user corrected it — open stays open across browser-tab switches.
      This is the ONE shared collapse path: same flag, same persisted state,
      same DOM hiding as the ▲ button (applyMainCollapseState). The button's
      closure state (isCollapsed inside buildPanel) is synced through the
@@ -3692,7 +3697,7 @@
      yet, the flag + persisted state are enough — injectPanel reads them on
      mount. Stats stay live while collapsed (v228/v229/v230) and the passive
      saver keeps recording; only the open panel is turned off. Returning to
-     the tab or to /dash never re-opens it — exactly like a reload. */
+     /dash never re-opens it — exactly like a reload. */
   function cbtCollapsePanelLikeReload() {
     _cbtPanelCollapsed = true;
     try { localStorage.setItem('cbt_panel_collapsed', '1'); } catch(e) {}
@@ -3715,10 +3720,6 @@
       var btn = panel.querySelector('#cbt-collapse-btn');
       if (btn) btn.textContent = '▼';
     } catch(eD) {}
-  }
-  function cbtOnHideCollapsePanel() {
-    if (!document.hidden) return;
-    try { cbtCollapsePanelLikeReload(); } catch(eH) {}
   }
   var _cbtCatchUpPoll = false; /* one-time bypass of the collapsed guard in pollActiveTasks, set by cbtExpandCatchUp() */
   function cbtIsPanelCollapsed() { return !!_cbtPanelCollapsed; }
@@ -13598,11 +13599,15 @@
     if (_cbtReturnHandlerRegistered) return;
     _cbtReturnHandlerRegistered = true;
     document.addEventListener('visibilitychange', cbtOnReturnToDashboard);
-    /* v23.9.234: switching to another browser tab hides the page — collapse
-       the panel, like a reload. cbtOnReturnToDashboard above returns early
-       while hidden, so the two listeners never fight; on return the panel
-       stays collapsed. */
-    document.addEventListener('visibilitychange', cbtOnHideCollapsePanel);
+    /* v23.9.235: NO collapse on a browser-tab switch. v23.9.234 registered a
+       second visibilitychange listener that collapsed the panel whenever
+       the page became hidden — that was wrong. Switching
+       to a different browser tab (or opening a new tab) must leave the panel
+       exactly as it was: open stays open, closed stays closed. Only
+       navigating away from /dash inside this same tab collapses it (see
+       onRoute in installRouteHealth). cbtOnReturnToDashboard above returns
+       early while hidden, so a return only refreshes the panel, never
+       collapses or re-opens it. */
     window.addEventListener('pageshow', cbtOnReturnToDashboard);
   }
 
