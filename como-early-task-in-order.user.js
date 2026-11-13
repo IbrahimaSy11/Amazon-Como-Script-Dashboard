@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.235
+// @version      23.9.236
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR
-// @author       Ibrahim
+// @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
 // @match        https://na.store-management.f3.amazon.dev/*
 // @run-at       document-start
@@ -37,9 +37,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v23998')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v23998', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.235');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v23999')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v23999', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.236');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -164,6 +164,16 @@
       content: ''; display: inline-block; width: 3px; height: 18px;
       background: var(--cb-blue); border-radius: 2px;
     }
+    /* v23.9.236: branding — "Dashboard made by Ibrahsyw", link opens the
+       author's Engage page in a new tab. Readable in light and dark mode. */
+    .cbt-brand { font-size: 12px; font-weight: 600; color: #5a7a96; white-space: nowrap; }
+    .cbt-brand-link { color: #2979ff; font-weight: 700; text-decoration: underline; }
+    #cbt-panel.dark .cbt-brand { color: #9ecbff; }
+    #cbt-panel.dark .cbt-brand-link { color: #58a6ff; }
+    .cbt-brand-footer { display: block; text-align: center; padding: 8px 0 10px; }
+    #cbt-profile-card .cbt-brand { flex-shrink: 0; }
+    #cbt-profile-overlay.dark #cbt-profile-card .cbt-brand { color: #9ecbff; }
+    #cbt-profile-overlay.dark #cbt-profile-card .cbt-brand-link { color: #58a6ff; }
     #cbt-controls { display: flex; gap: 10px; align-items: center; }
     #cbt-controls > span {
       cursor: pointer; color: var(--cb-text2); font-size: 13px; font-weight: 700;
@@ -3698,6 +3708,153 @@
      mount. Stats stay live while collapsed (v228/v229/v230) and the passive
      saver keeps recording; only the open panel is turned off. Returning to
      /dash never re-opens it — exactly like a reload. */
+  /* ══════════════════════════════════════
+     v23.9.236 — BRANDING, tamper-resistant while running.
+     Text (exact): "Dashboard made by Ibrahsyw". The name links to the
+     author's Amazon Engage page and opens in a NEW tab (target=_blank),
+     so it never navigates the COMO tab away.
+     Honest limit: anyone who has the .user.js FILE can edit its text —
+     no client-side script can prevent that. What this does is self-heal
+     WHILE the script runs: if the branding is removed or changed in the
+     browser (DevTools, another script, or an edited copy that keeps the
+     rest of the code), cbtEnsureBranding() puts the exact text and link
+     back. It is called on mount/remount, on tab switches and on profile
+     renders, and a throttled MutationObserver re-runs it when a branding
+     node is removed or its text/href changes. The observer only repairs
+     branding — it never re-renders tabs or data — and the check is
+     throttled to at most once per second, so it cannot cause lag.
+     The branding lives in three places so it is visible from every
+     angle: (a) the panel header — always shown, open or collapsed;
+     (b) the panel body footer; (c) the associate profile card header. */
+  var CBT_BRAND_TEXT = 'Dashboard made by Ibrahsyw';
+  var CBT_BRAND_NAME = 'Ibrahsyw';
+  var CBT_BRAND_URL = 'https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview';
+  function cbtBrandLinkEl() {
+    var a = document.createElement('a');
+    a.className = 'cbt-brand-link';
+    a.setAttribute('href', CBT_BRAND_URL);
+    a.setAttribute('target', '_blank');
+    a.setAttribute('rel', 'noopener noreferrer');
+    a.textContent = CBT_BRAND_NAME;
+    return a;
+  }
+  function cbtBrandNode(cls) {
+    var s = document.createElement('span');
+    s.className = cls;
+    s.setAttribute('data-cbt-brand', '1');
+    s.appendChild(document.createTextNode('Dashboard made by '));
+    s.appendChild(cbtBrandLinkEl());
+    return s;
+  }
+  function cbtBrandNodeIsGood(node) {
+    if (!node || typeof node.textContent !== 'string') return false;
+    if (node.textContent !== CBT_BRAND_TEXT) return false;
+    var a = null;
+    try { a = node.querySelector ? node.querySelector('a') : null; } catch(e) {}
+    if (!a) return false;
+    var href = null;
+    try { href = a.getAttribute('href'); } catch(eH) {}
+    if (href !== CBT_BRAND_URL) return false;
+    if (a.target !== '_blank') return false;
+    if (a.textContent !== CBT_BRAND_NAME) return false;
+    return true;
+  }
+  /* Clicking the name must never collapse/close the panel or trigger any
+     other panel action: stop the click at the link so no ancestor panel
+     or profile handler reacts. The default navigation (new tab) still
+     happens — stopPropagation does not prevent it. */
+  function cbtBrandGuardLink(container) {
+    if (!container || typeof container.querySelectorAll !== 'function') return;
+    var links = container.querySelectorAll('a.cbt-brand-link');
+    for (var i = 0; i < links.length; i++) {
+      (function(a) {
+        if (a._cbtBrandGuarded) return;
+        a._cbtBrandGuarded = true;
+        a.addEventListener('click', function(e) { try { e.stopPropagation(); } catch(eS) {} });
+      })(links[i]);
+    }
+  }
+  function cbtEnsureBranding() {
+    try {
+      var panel = null;
+      try { panel = document.getElementById('cbt-panel'); } catch(eP) {}
+      if (panel) {
+        var header = panel.querySelector('#cbt-header');
+        if (header) {
+          var h = header.querySelector('[data-cbt-brand]');
+          if (!cbtBrandNodeIsGood(h)) {
+            if (h) { try { h.remove(); } catch(eR) {} }
+            var title = header.querySelector('#cbt-title');
+            var node = cbtBrandNode('cbt-brand');
+            try { header.insertBefore(node, title ? title.nextSibling : header.firstChild); } catch(eI) {}
+          }
+          cbtBrandGuardLink(header);
+        }
+        var body = panel.querySelector('#cbt-body');
+        if (body) {
+          var f = body.querySelector('.cbt-brand-footer');
+          if (!cbtBrandNodeIsGood(f)) {
+            if (f) { try { f.remove(); } catch(eR2) {} }
+            try { body.appendChild(cbtBrandNode('cbt-brand cbt-brand-footer')); } catch(eA) {}
+          }
+          cbtBrandGuardLink(body);
+        }
+      }
+      var card = null;
+      try { card = document.querySelector('#cbt-profile-card'); } catch(eC) {}
+      if (card) {
+        var ph = card.querySelector('header');
+        if (ph) {
+          var p = ph.querySelector('[data-cbt-brand]');
+          if (!cbtBrandNodeIsGood(p)) {
+            if (p) { try { p.remove(); } catch(eR3) {} }
+            var closeBtn = ph.querySelector('[data-profile-close]');
+            var pn = cbtBrandNode('cbt-brand cbt-brand-profile');
+            try { if (closeBtn) ph.insertBefore(pn, closeBtn); else ph.appendChild(pn); } catch(eI2) {}
+          }
+          cbtBrandGuardLink(ph);
+        }
+      }
+    } catch(e) {}
+  }
+  var _cbtBrandObserver = null, _cbtBrandProfileObserver = null;
+  var _cbtBrandLastCheck = 0, _cbtBrandCheckTimer = null;
+  function cbtScheduleBrandCheck() {
+    var now = Date.now();
+    if (now - _cbtBrandLastCheck < 1000) {
+      if (_cbtBrandCheckTimer === null) {
+        _cbtBrandCheckTimer = setTimeout(function() { _cbtBrandCheckTimer = null; cbtScheduleBrandCheck(); }, 1000 - (now - _cbtBrandLastCheck));
+      }
+      return;
+    }
+    _cbtBrandLastCheck = now;
+    try { cbtEnsureBranding(); } catch(e) {}
+  }
+  function cbtStartBrandObserver() {
+    try {
+      if (typeof MutationObserver !== 'function') return;
+      if (_cbtBrandObserver) { try { _cbtBrandObserver.disconnect(); } catch(e) {} }
+      var panel = document.getElementById('cbt-panel');
+      if (!panel) return;
+      _cbtBrandObserver = new MutationObserver(function() { cbtScheduleBrandCheck(); });
+      _cbtBrandObserver.observe(panel, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['href'] });
+    } catch(e) {}
+  }
+  function cbtStartBrandProfileObserver() {
+    try {
+      if (typeof MutationObserver !== 'function') return;
+      if (_cbtBrandProfileObserver) { try { _cbtBrandProfileObserver.disconnect(); } catch(e) {} }
+      var overlay = document.getElementById('cbt-profile-overlay');
+      if (!overlay) return;
+      _cbtBrandProfileObserver = new MutationObserver(function() { cbtScheduleBrandCheck(); });
+      _cbtBrandProfileObserver.observe(overlay, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['href'] });
+    } catch(e) {}
+  }
+  function cbtStopBrandProfileObserver() {
+    try { if (_cbtBrandProfileObserver) _cbtBrandProfileObserver.disconnect(); } catch(e) {}
+    _cbtBrandProfileObserver = null;
+  }
+
   function cbtCollapsePanelLikeReload() {
     _cbtPanelCollapsed = true;
     try { localStorage.setItem('cbt_panel_collapsed', '1'); } catch(e) {}
@@ -7444,6 +7601,7 @@
     panel2.innerHTML =
       '<div id="cbt-header">' +
         '<span id="cbt-title">Batcher Timers</span>' +
+        '<span class="cbt-brand" data-cbt-brand>Dashboard made by <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">Ibrahsyw</a></span>' +
         '<div id="cbt-controls">' +
           '<span id="cbt-theme-btn" title="Toggle Dark/Light">🌙</span>' +
           '<button type="button" id="cbt-afa-btn" title="Open cart actions" aria-haspopup="dialog" aria-expanded="false" aria-controls="cbt-afa-overlay">' +
@@ -7546,6 +7704,7 @@
           '<div id="cbt-hof-empty"></div>' +
           '<div id="cbt-hof-note" style="text-align:center;color:#888;padding:4px;font-size:11px;"></div>' +
         '</div>' +
+        '<span class="cbt-brand cbt-brand-footer" data-cbt-brand>Dashboard made by <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">Ibrahsyw</a></span>' +
       '</div>' +
       '<div id="cbt-drag-bottom" title="Drag to resize"></div>';
     return panel2;
@@ -7717,6 +7876,7 @@
     } catch(ex) {}
 
     mount.el.parentNode.insertBefore(_panel2Ref, mount.el);
+    try { cbtEnsureBranding(); cbtStartBrandObserver(); } catch(eBrandMount) {}
 
     _mountFails = 0;              /* mounted successfully */
     try { applyUiScale(); } catch(ex) {}   /* restore the saved size */
@@ -7971,6 +8131,7 @@
         if (activeTab==='hof') { try { cbtIdle(function(){ try { hofPull(); } catch(e) {} }, 700); } catch(e) {} }
         /* v23.9.226: coalesce rapid tab clicks into one render. */
         cbtScheduleTabRender();
+        try { cbtEnsureBranding(); } catch(eBrandTab) {}
 
         /* A new computer should never sit on an empty Weekly/Today view while
            waiting for the 10-second background sync. Render cache instantly,
@@ -13912,6 +14073,7 @@
   }
   function cbtCloseProfile() {
     if (!_cbtProfile) return;
+    try { cbtStopBrandProfileObserver(); } catch(eBrandClose) {}
     var old=_cbtProfile;_cbtProfile=null;old.overlay.remove();
     if (old.trigger && old.trigger.isConnected) {try {old.trigger.focus({preventScroll:true});}catch(e){}}
   }
@@ -14070,6 +14232,7 @@
        background idle refresh pass nothing, so they never yank the
        scroll. */
     if (scrollDetail) cbtScrollProfileDetailIntoView();
+    try { cbtEnsureBranding(); } catch(eBrandProfile) {}
   }
   function cbtOpenProfile(assoc, trigger) {
     assoc=cbtAssociateKey(assoc);if(!assoc)return;
@@ -14077,11 +14240,12 @@
     var overlay=document.createElement('div');overlay.id='cbt-profile-overlay';
     var dark=document.getElementById('cbt-panel');if(dark && dark.classList.contains('dark'))overlay.classList.add('dark');
     overlay.innerHTML='<section id="cbt-profile-card" role="dialog" aria-modal="true" aria-labelledby="cbt-profile-title">'+
-      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
+      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><span class="cbt-brand cbt-brand-profile" data-cbt-brand>Dashboard made by <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">Ibrahsyw</a></span><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
       '<div class="cbt-profile-controls"><span>Period <span class="cbt-profile-period"><button type="button" data-profile-period-toggle aria-label="Profile period" aria-haspopup="menu" aria-expanded="false">Today ▾</button><span class="cbt-profile-period-menu" role="menu" aria-label="Profile period" hidden><button type="button" role="menuitemradio" data-profile-period="today" aria-checked="true">Today</button><button type="button" role="menuitemradio" data-profile-period="week" aria-checked="false">This week</button></span></span></span><span title="All rate values below use packages per minute of batching time">Rate Unit: Packages/Minute</span></div>'+
       '<div class="cbt-profile-metrics" data-profile-metrics></div><div class="cbt-profile-table-wrap"><table><thead><tr><th>Completion hour</th><th>Carts</th><th>Packages</th><th>Rate</th></tr></thead><tbody></tbody></table></div>'+
       '<p data-profile-note></p></section>';
     document.body.appendChild(overlay);
+    try { cbtEnsureBranding(); cbtStartBrandProfileObserver(); } catch(eBrandOpen) {}
     var card=overlay.querySelector('section');_cbtProfile={assoc:assoc,period:activeTab==='weekly'?'week':'today',overlay:overlay,card:card,trigger:trigger};
     var periodToggle=card.querySelector('[data-profile-period-toggle]'),
       periodMenu=card.querySelector('.cbt-profile-period-menu');
