@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.237
+// @version      23.9.238
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -37,9 +37,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399A')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399A', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.237');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399B')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399B', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.238');
 
   var _cbtAuthCache = {route: '', until: 0, value: false};
   var _cbtAuthSuspendedUntil = 0;
@@ -3718,7 +3718,8 @@
   /* ══════════════════════════════════════
      v23.9.237 — BRANDING, tamper-resistant while running.
      Text (exact): "DASHBOARD MADE BY IBRAHSYW". The name links to the
-     author's Amazon Engage page and opens in a NEW tab (target=_blank),
+     author's public portfolio (v23.9.238: the Amazon Engage page was
+     manager-only) and opens in a NEW tab (target=_blank),
      so it never navigates the COMO tab away.
      Honest limit: anyone who has the .user.js FILE can edit its text —
      no client-side script can prevent that. What this does is self-heal
@@ -3740,7 +3741,7 @@
      rows are NOT capitalised — capitalising a login would break assignment. */
   var CBT_BRAND_TEXT = 'DASHBOARD MADE BY IBRAHSYW';
   var CBT_BRAND_NAME = 'IBRAHSYW';
-  var CBT_BRAND_URL = 'https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview';
+  var CBT_BRAND_URL = 'https://ibrahimasy11.github.io';
   function cbtBrandLinkEl() {
     var a = document.createElement('a');
     a.className = 'cbt-brand-link';
@@ -7649,7 +7650,7 @@
     panel2.innerHTML =
       '<div id="cbt-header">' +
         '<span id="cbt-title">Batcher Timers</span>' +
-        '<span class="cbt-brand" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
+        '<span class="cbt-brand" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://ibrahimasy11.github.io" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
         '<div id="cbt-controls">' +
           '<span id="cbt-theme-btn" title="Toggle Dark/Light">🌙</span>' +
           '<button type="button" id="cbt-afa-btn" title="Open cart actions" aria-haspopup="dialog" aria-expanded="false" aria-controls="cbt-afa-overlay">' +
@@ -7752,7 +7753,7 @@
           '<div id="cbt-hof-empty"></div>' +
           '<div id="cbt-hof-note" style="text-align:center;color:#888;padding:4px;font-size:11px;"></div>' +
         '</div>' +
-        '<span class="cbt-brand cbt-brand-footer" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
+        '<span class="cbt-brand cbt-brand-footer" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://ibrahimasy11.github.io" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
       '</div>' +
       '<div id="cbt-drag-bottom" title="Drag to resize"></div>';
     return panel2;
@@ -14297,7 +14298,7 @@
     var overlay=document.createElement('div');overlay.id='cbt-profile-overlay';
     var dark=document.getElementById('cbt-panel');if(dark && dark.classList.contains('dark'))overlay.classList.add('dark');
     overlay.innerHTML='<section id="cbt-profile-card" role="dialog" aria-modal="true" aria-labelledby="cbt-profile-title">'+
-      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><span class="cbt-brand cbt-brand-profile" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://atoz.amazon.work/engage/conversation-hub/employee/113031976/overview" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
+      '<header><strong id="cbt-profile-title">'+afaEsc(assoc)+' · Profile</strong><span class="cbt-brand cbt-brand-profile" data-cbt-brand>DASHBOARD MADE BY <a class="cbt-brand-link" href="https://ibrahimasy11.github.io" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span><button type="button" data-profile-close aria-label="Close associate profile">×</button></header>'+
       '<div class="cbt-profile-controls"><span>Period <span class="cbt-profile-period"><button type="button" data-profile-period-toggle aria-label="Profile period" aria-haspopup="menu" aria-expanded="false">Today ▾</button><span class="cbt-profile-period-menu" role="menu" aria-label="Profile period" hidden><button type="button" role="menuitemradio" data-profile-period="today" aria-checked="true">Today</button><button type="button" role="menuitemradio" data-profile-period="week" aria-checked="false">This week</button></span></span></span><span title="All rate values below use packages per minute of batching time">Rate Unit: Packages/Minute</span></div>'+
       '<div class="cbt-profile-metrics" data-profile-metrics></div><div class="cbt-profile-table-wrap"><table><thead><tr><th>Completion hour</th><th>Carts</th><th>Packages</th><th>Rate</th></tr></thead><tbody></tbody></table></div>'+
       '<p data-profile-note></p></section>';
