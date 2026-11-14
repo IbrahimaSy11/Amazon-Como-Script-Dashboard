@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.243
+// @version      23.9.245
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399G')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399G', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.243');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399I')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399I', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.245');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -64,8 +64,9 @@
      shipped separately. Tampermonkey still parses this whole
      file on every page; the runtime work here is only the one
      listener below. */
-  var QA_BRAND_URL = 'https://ibrahimasy11.github.io';
-  var QA_BRAND_TEXT = 'DASHBOARD MADE BY IBRAHSYW';
+  /* v23.9.244: the QR popup no longer carries the branding line, so
+     these constants are gone. The dashboard branding (CBT_BRAND_*) is
+     untouched. */
 
   var QA_QR_CSS =
     '#qa-qr-overlay {' +
@@ -99,14 +100,14 @@
       'font-size: 15px; font-weight: 800; color: #0d1b2a;' +
       'letter-spacing: .045em; text-transform: uppercase; white-space: nowrap; pointer-events: none;' +
     '}' +
-    '#qa-qr-left, #qa-qr-right, #qa-qr-close {' +
+    '#qa-qr-left, #qa-qr-right {' +
       'cursor: pointer; border: none; background: transparent; color: #66788a;' +
       'width: 28px; height: 28px; border-radius: 6px;' +
       'display: inline-flex; align-items: center; justify-content: center;' +
       'padding: 0; line-height: 1; font-size: 18px; font-weight: 900;' +
       'transition: color .12s, background .12s, opacity .12s;' +
     '}' +
-    '#qa-qr-left:hover:not(:disabled), #qa-qr-right:hover:not(:disabled), #qa-qr-close:hover {' +
+    '#qa-qr-left:hover:not(:disabled), #qa-qr-right:hover:not(:disabled) {' +
       'color: #2979ff; background: rgba(41,121,255,.08);' +
     '}' +
     '#qa-qr-left:disabled, #qa-qr-right:disabled { cursor: default; opacity: .28; }' +
@@ -124,11 +125,7 @@
       'background: #ffffff; outline: none; text-align: center;' +
       'transition: border-color .12s, box-shadow .12s;' +
     '}' +
-    '#qa-qr-input:focus { border-color: #2979ff; box-shadow: 0 0 0 2px rgba(41,121,255,.12); }' +
-    '#qa-qr-brand { display: block; text-align: center; padding: 0 10px 10px; font-size: 11px; font-weight: 600; color: #5a7a96; }' +
-    '#qa-qr-brand a { color: #2979ff; font-weight: 700; text-decoration: underline; animation: qaBrandGlow 2s ease-in-out infinite; }' +
-    '@keyframes qaBrandGlow { 0%, 100% { text-shadow: 0 0 2px rgba(41,121,255,.30); } 50% { text-shadow: 0 0 10px rgba(41,121,255,.80), 0 0 18px rgba(41,121,255,.40); } }' +
-    '@media (prefers-reduced-motion: reduce) { #qa-qr-brand a { animation: none !important; text-shadow: 0 0 6px rgba(41,121,255,.55); } }';
+    '#qa-qr-input:focus { border-color: #2979ff; box-shadow: 0 0 0 2px rgba(41,121,255,.12); }';
 
   /* ---------- Popup state ---------- */
   var _qaOverlay = null;
@@ -384,14 +381,11 @@
           '<span id="qa-qr-title">QR Code</span>' +
           '<span id="qa-qr-head-right">' +
             '<button id="qa-qr-right" type="button" title="Move QR right" aria-label="Move QR right">\u2192</button>' +
-            '<button id="qa-qr-close" type="button" title="Close" aria-label="Close">\u2715</button>' +
           '</span>' +
         '</div>' +
         '<div id="qa-qr-canvas-wrap"><div id="qa-qr-svg" aria-live="polite"></div></div>' +
         '<div id="qa-qr-err"></div>' +
         '<input id="qa-qr-input" type="text" spellcheck="false" autocomplete="off" aria-label="QR value" placeholder="Text to encode..."/>' +
-        '<span id="qa-qr-brand">DASHBOARD MADE BY ' +
-          '<a href="' + QA_BRAND_URL + '" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
       '</div>';
 
     document.body.appendChild(_qaOverlay);
@@ -403,7 +397,6 @@
 
     var leftBtn = _qaOverlay.querySelector('#qa-qr-left');
     var rightBtn = _qaOverlay.querySelector('#qa-qr-right');
-    var closeBtn = _qaOverlay.querySelector('#qa-qr-close');
 
     if (leftBtn) {
       leftBtn.addEventListener('click', function (e) {
@@ -419,14 +412,6 @@
         qaMoveHorizontal(1);
       });
     }
-    if (closeBtn) {
-      closeBtn.addEventListener('click', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        qaClose();
-      });
-    }
-
     /* The text field is editable and the QR redraws live as you type. */
     input.addEventListener('input', function () {
       qaRender(input.value);
@@ -4423,19 +4408,10 @@
         }
         cbtBrandGuardLink(drop);
       }
-      /* v23.9.243: the COMO QR popup. It is rebuilt on every open, so the
-         brand is added at build time in qrOpen; this block repairs it if
-         something removes or alters it while the popup is open. */
-      var qrCard = null;
-      try { qrCard = document.querySelector('#cbt-qr-card'); } catch(eQ) {}
-      if (qrCard) {
-        var qb = qrCard.querySelector('[data-cbt-brand]');
-        if (!cbtBrandNodeIsGood(qb)) {
-          if (qb) { try { qb.remove(); } catch(eR5) {} }
-          try { qrCard.appendChild(cbtBrandNode('cbt-brand cbt-brand-qr')); } catch(eA3) {}
-        }
-        cbtBrandGuardLink(qrCard);
-      }
+      /* v23.9.244: the COMO QR popup deliberately carries NO branding
+         line any more, so the self-heal no longer touches it. The panel
+         header/footer, profile card and suggestion dropdown above are
+         still healed exactly as before. */
     } catch(e) {}
   }
   var _cbtBrandObserver = null, _cbtBrandProfileObserver = null;
@@ -10636,7 +10612,7 @@
      Highlight any text on the page and a centered QR popup appears
      encoding it. The text field below the code is editable and the
      QR redraws live as you type. Click outside the card (or press
-     Esc, or the ✕) to close. The encoder library is embedded, so QR
+     Esc) to close. The encoder library is embedded, so QR
      generation is instant, offline, and needs no external requests.
      qrcode-generator (MIT, Kazuhiko Arase) embedded below.
   ══════════════════════════════════════ */
@@ -10990,13 +10966,11 @@
           '<span id="cbt-qr-title">QR Code</span>' +
           '<span id="cbt-qr-head-right">' +
             '<button id="cbt-qr-right" type="button" title="Move QR right" aria-label="Move QR right">→</button>' +
-            '<button id="cbt-qr-close" type="button" title="Close" aria-label="Close">✕</button>' +
           '</span>' +
         '</div>' +
         '<div id="cbt-qr-canvas-wrap"><div id="cbt-qr-svg" aria-live="polite"></div></div>' +
         '<div id="cbt-qr-err"></div>' +
         '<input id="cbt-qr-input" type="text" spellcheck="false" autocomplete="off" aria-label="QR value" placeholder="Text to encode..."/>' +
-        '<span class="cbt-brand cbt-brand-qr" data-cbt-brand="1">DASHBOARD MADE BY <a class="cbt-brand-link" href="https://ibrahimasy11.github.io" target="_blank" rel="noopener noreferrer">IBRAHSYW</a></span>' +
       '</div>';
 
     document.body.appendChild(_qrOverlay);
@@ -11011,7 +10985,6 @@
 
     var qrLeftBtn = _qrOverlay.querySelector('#cbt-qr-left');
     var qrRightBtn = _qrOverlay.querySelector('#cbt-qr-right');
-    var qrCloseBtn = _qrOverlay.querySelector('#cbt-qr-close');
 
     if (qrLeftBtn) {
       qrLeftBtn.addEventListener('click', function(e){
@@ -11027,16 +11000,8 @@
         qrMoveHorizontal(1);
       });
     }
-    if (qrCloseBtn) {
-      qrCloseBtn.addEventListener('click', function(e){
-        e.preventDefault();
-        e.stopPropagation();
-        qrClose();
-      });
-    }
-    /* v23.9.243: the brand self-heal (cbtEnsureBranding) also covers the
-       QR card now — see the QR branch there. */
-    try { cbtEnsureBranding(); } catch(eBrandQR) {}
+    /* v23.9.244: no cbtEnsureBranding() call here any more — it only
+       existed to heal the QR card's branding line, which is gone. */
 
     qrRefreshArrowState();
     qrEnableSnapDrag(card);
@@ -11052,7 +11017,9 @@
     /* v23.9.243: close immediately on mousedown outside, like the
        any-site popup. The old 80 ms selection check left the popup open
        after an outside click whenever any text was selected — there was
-       no way to dismiss it except the (missing) ✕ button or Escape.
+       no way to dismiss it except Escape. (v23.9.244: the ✕ button was
+       removed from the popup header, so outside-click and Escape are the
+       ways to close it.)
        A mousedown that starts a NEW drag-select still works: the mouseup
        reopens with the new text (the closed-text check only blocks the
        exact text that was just closed). */
@@ -11901,8 +11868,12 @@
 
      QR #1 = the Scannable Id from the SAME MISSING/DAMAGED package row.
      QR #2 = the verified cart assigned to the task (for example CART_4637).
-     Package Last Known Location values are never used as the cart QR. If the
-     assigned cart cannot be verified, only QR #1 is generated.
+     v23.9.245: if the assigned cart cannot be verified yet — no cart
+     exists for the task when the package is marked missing — QR #2 is
+     still generated, from the package's Last Known Location, but only
+     when that location IS a plain cart id such as CART_152. A slot
+     (CART_PB2200_SLOT_4), a PB cart, or any other location text never
+     becomes a cart QR; in that case only QR #1 is generated.
 
      Discovery checks only alert-looking rows in the main Tasks list for
      performance, but checks EVERY readable row in Problem Solve because
@@ -11920,8 +11891,23 @@
     return m ? m[0] : '';
   }
 
+  /* v23.9.245: last-resort cart QR. When the assigned task cart cannot be
+     verified yet (no cart exists for the task when the package is marked
+     missing), the package's Last Known Location is the only cart identifier
+     available — but only when it IS a plain cart id (CART_152). A slot
+     (CART_PB2200_SLOT_4), a PB cart, or any other location text is not a
+     cart and never becomes a QR, so nothing is invented. */
+  function afaMissingLocationCart(location) {
+    var s = afaMissingText(location).toUpperCase();
+    if (!/^CART_(?!PB|.*_SLOT_)[A-Z0-9]+$/.test(s)) return '';
+    return s;
+  }
+
   /* Return the cart assigned to the TASK, never a package's Last Known
-     Location. The old implementation accepted the first CART_ value anywhere
+     Location. (v23.9.245: the last-known-location cart QR is a render-time
+     fallback in afaMissingQrResult, not here — this function still returns
+     only verified task carts.) The old implementation accepted the first
+     CART_ value anywhere
      in the response/table, so a location such as CART_PB2200_SLOT_4 could be
      rendered as the task cart QR. Candidates are now limited to cart-bearing
      task fields and package/location branches are explicitly excluded. */
@@ -12721,14 +12707,22 @@
       var packageStatus = afaMissingText(entry.packageStatus).toUpperCase() || 'MISSING';
       var packageKind = packageStatus === 'DAMAGED' ? 'Damaged Package' : 'Missing Package';
       var tiles = afaMissingQrTile(packageKind, entry.missingId);
-      var hasCart = !!entry.cart;
+      /* v23.9.245: no verified cart yet — generate the cart QR from the
+         package's Last Known Location when it IS a plain cart id
+         (CART_152). A verified cart always wins; a slot, PB cart or other
+         location text yields no cart QR, exactly as before. */
+      var cartValue = entry.cart || afaMissingLocationCart(entry.location);
+      var hasCart = !!cartValue;
+      var cartFromLocation = !entry.cart && hasCart;
 
       if (hasCart) {
-        tiles += afaMissingQrTile('Cart', entry.cart);
+        tiles += afaMissingQrTile('Cart', cartValue);
       }
 
       var note = hasCart
-        ? packageKind + ' QR + cart QR.'
+        ? (cartFromLocation
+            ? packageKind + ' QR + cart QR from last known location (assigned cart could not be verified).'
+            : packageKind + ' QR + cart QR.')
         : 'The assigned task cart could not be verified, so only the ' + packageKind.toLowerCase() + ' QR is shown.';
 
       stage.innerHTML =
