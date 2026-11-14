@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.245
+// @version      23.9.246
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399I')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399I', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.245');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399J')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399J', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.246');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -13348,7 +13348,7 @@
     _afaOverlay = null;
     var runButton = document.getElementById('cbt-afa-btn');
     if (runButton) runButton.setAttribute('aria-expanded','false');
-    if (_afaRunning) afaSetBtn('▶ Running — View', true);
+    if (_afaRunning) afaSetBtn('▶ Running', true);
     else { _afaRunState=null; afaSetBtn('▶ Run', false); }
   }
   function afaShell(title, bodyHtml, footHtml) {
@@ -13704,7 +13704,7 @@
       '<div id="cbt-afa-lead"><span id="cbt-afa-count">Starting\u2026</span></div>' +
       '<div id="cbt-afa-bar"><div id="cbt-afa-fill"></div></div>' +
       '<div id="cbt-afa-live"></div>',
-      '<button class="cbt-afa-act" data-afa="hide">Hide — keep running</button>' +
+      '<button class="cbt-afa-act" data-afa="hide">Hide</button>' +
       '<button class="cbt-afa-act stop" data-afa="stop">⏹ Stop</button>');
     var card = _afaOverlay.querySelector('#cbt-afa-card');
     card.addEventListener('click', function(e){
@@ -13817,7 +13817,7 @@
     var results = [], i = 0, finished = false;
     _afaRunState={mode:runMode,done:0,total:list.length,ref:'',results:results,finished:false};
     if(showProgress)afaProgressView(runMode);
-    else afaSetBtn('▶ Running — View',true);
+    else afaSetBtn('▶ Running',true);
 
     function finish() {
       if (finished) return;
