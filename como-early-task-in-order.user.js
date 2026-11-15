@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.246
+// @version      23.9.247
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399J')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399J', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.246');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399K')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399K', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.247');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -4497,6 +4497,32 @@
   }
   var _cbtCatchUpPoll = false; /* one-time bypass of the collapsed guard in pollActiveTasks, set by cbtExpandCatchUp() */
   function cbtIsPanelCollapsed() { return !!_cbtPanelCollapsed; }
+  /* v23.9.247: the ▶ Running button and the run flow must never expand
+     the dashboard panel. Investigation of v23.9.246 found NO direct path
+     from the Run button or a run start/finish to the panel: the click
+     handler only opens the AFA progress modal, and afaRun/afaSummary only
+     render into that modal. The real auto-expand path is the MOUNT-TIME
+     RESTORE in injectPanel: it re-applies
+     localStorage['cbt_panel_collapsed'], which flips to '0' the moment
+     the panel is expanded once with ▼ — and the panel is remounted
+     constantly while a job runs (panelWatcher MutationObserver, the 5s
+     boardIsMisplaced check, route changes), so a remount during a run
+     mounts the panel EXPANDED from that stale '0'. These helpers close
+     it: the mount restore forces collapsed while a run is in progress,
+     unless the user expanded the panel by hand DURING this run (only the
+     ▼ button sets that flag, and it is cleared when a run ends). */
+  var _cbtManualExpandDuringRun = false; /* ▼-only, cleared when a run ends */
+  function cbtRunKeepsPanelCollapsed() {
+    try { return typeof _afaRunning !== 'undefined' && !!_afaRunning && !_cbtManualExpandDuringRun; } catch(e) { return false; }
+  }
+  function cbtMountCollapsed() {
+    try { if (localStorage.getItem('cbt_panel_collapsed') === '1') return true; } catch(e) {}
+    return cbtRunKeepsPanelCollapsed();
+  }
+  function cbtReassertCollapsedIfWas(wasCollapsed) {
+    if (!wasCollapsed) return;
+    try { cbtCollapsePanelLikeReload(); } catch(e) {}
+  }
   var WARN_ELAPSED_MIN = 15, ALERT_ELAPSED_MIN = 25;
   var WARN_RATE = 2.1, ALERT_RATE = 1.5;
 
@@ -8853,11 +8879,11 @@
        stored state had changed out-of-band (e.g. from another tab). The
        hook applies the same DOM state plus the saved height. */
     if (typeof _panel2Ref._cbtApplyCollapse === 'function') {
-      try { _panel2Ref._cbtApplyCollapse(localStorage.getItem('cbt_panel_collapsed') === '1'); } catch(exHook) {}
+      try { _panel2Ref._cbtApplyCollapse(cbtMountCollapsed()); } catch(exHook) {} /* v23.9.247: never mount expanded during a run */
     } else {
     try {
       var savedH = localStorage.getItem('cbt_body_h');
-      var collapsed0 = localStorage.getItem('cbt_panel_collapsed') === '1';
+      var collapsed0 = cbtMountCollapsed(); /* v23.9.247: never mount expanded during a run */
       var body0  = _panel2Ref.querySelector('#cbt-body');
       var tabs0  = _panel2Ref.querySelector('#cbt-tabs');
       var search0 = _panel2Ref.querySelector('#cbt-unified-search');
@@ -9100,8 +9126,12 @@
     if (e) { e.preventDefault(); e.stopPropagation(); }
     /* Preserve Run/View/Stop behavior; native button activation also supports
        Enter and Space without adding competing keyboard/pointer handlers. */
+    /* v23.9.247: snapshot the collapse state — opening the running view
+       must never expand the panel, so re-assert it afterwards. */
+    var _runClickWasCollapsed = false;
+    try { _runClickWasCollapsed = cbtIsPanelCollapsed(); } catch(eCC) {}
     if (_afaRunning) {
-      if (!_afaOverlay) { afaProgressView(_afaRunState && _afaRunState.mode); return; }
+      if (!_afaOverlay) { afaProgressView(_afaRunState && _afaRunState.mode); cbtReassertCollapsedIfWas(_runClickWasCollapsed); return; }
       _afaStop = true;
       afaSetBtn('⏹ Stopping…', true);
       var modalStop = document.querySelector('#cbt-afa-card [data-afa="stop"]');
@@ -9118,6 +9148,7 @@
       var close = _afaOverlay && _afaOverlay.querySelector('[data-afa="close"]');
       if (close) close.addEventListener('click',afaClose);
     }
+    cbtReassertCollapsedIfWas(_runClickWasCollapsed);
   }
   function attachPanelEvents(panel2) {
     var unifiedSearch = panel2.querySelector('#cbt-unified-search-input');
@@ -9175,7 +9206,7 @@
 
     /* v23.9.84: persist the dashboard's collapsed/open state across reloads. */
     var isCollapsed = false;
-    try { isCollapsed = localStorage.getItem('cbt_panel_collapsed') === '1'; } catch(eCollapsedLoad) {}
+    try { isCollapsed = cbtMountCollapsed(); } catch(eCollapsedLoad) {} /* v23.9.247: never mount expanded during a run */
     var collapseBtn = panel2.querySelector('#cbt-collapse-btn');
 
     function applyMainCollapseState() {
@@ -9220,11 +9251,16 @@
          The saved height is kept, so expanding restores it. */
       if (isCollapsed) {
         isCollapsed = false;
+        /* v23.9.247: a manual expand during a run is the user's own
+           choice — remember it so a remount during THIS run does not
+           collapse the panel back on him. */
+        try { if (typeof _afaRunning !== 'undefined' && _afaRunning) _cbtManualExpandDuringRun = true; } catch(eME) {}
         try { localStorage.setItem('cbt_panel_collapsed', '0'); } catch(ex) {}
         applyMainCollapseState();
         cbtExpandCatchUp();
       } else {
         isCollapsed = true;
+        _cbtManualExpandDuringRun = false;
         try { localStorage.setItem('cbt_panel_collapsed', '1'); } catch(ex) {}
         applyMainCollapseState();
       }
@@ -13628,7 +13664,7 @@
       /* Refresh silently. The old visible "Checking..." state looked like a
          second loader after the user had already chosen an action. */
       afaRefreshJobData().then(function(){
-        if (_afaStop) {_afaRunning=false;afaSetBtn('▶ Run',false);afaSummary([],true,0,action);return;}
+        if (_afaStop) {_afaRunning=false;_cbtManualExpandDuringRun=false;afaSetBtn('▶ Run',false);afaSummary([],true,0,action);return;}
 
         var queue = [];
         var opts = {};
@@ -13644,14 +13680,14 @@
         }
 
         if (!queue.length) {
-          _afaRunning=false;afaSetBtn('▶ Run',false);
+          _afaRunning=false;_cbtManualExpandDuringRun=false;afaSetBtn('▶ Run',false);
           afaSummary([],false,0,action);
           return;
         }
 
         afaRun(queue, opts);
       }).catch(function(error){
-        _afaRunning=false;afaSetBtn('▶ Run',false);
+        _afaRunning=false;_cbtManualExpandDuringRun=false;afaSetBtn('▶ Run',false);
         afaSummary([{ref:'Refresh',ok:false,msg:String(error && error.message || error || 'Task refresh failed')}],_afaStop,0,action);
       });
     }
@@ -13814,9 +13850,14 @@
        ▶ Run while idle, ⏹ Stop while an action is executing. */
     afaSetBtn('⏹ Stop', true);
     var showProgress=!!_afaOverlay || !_afaRunState;
+    /* v23.9.247: a run starting must never expand the panel — snapshot
+       the collapsed state now and re-assert it when the run opens its
+       view and when it finishes (finish() below). */
+    var _runStartWasCollapsed = false;
+    try { _runStartWasCollapsed = cbtIsPanelCollapsed(); } catch(eRC) {}
     var results = [], i = 0, finished = false;
     _afaRunState={mode:runMode,done:0,total:list.length,ref:'',results:results,finished:false};
-    if(showProgress)afaProgressView(runMode);
+    if(showProgress){afaProgressView(runMode);cbtReassertCollapsedIfWas(_runStartWasCollapsed);}
     else afaSetBtn('▶ Running',true);
 
     function finish() {
@@ -13826,7 +13867,7 @@
       /* Re-read the dashboard: any cart still sitting under Partially
          Batched can simply be run again next time. */
       afaRefreshJobData().catch(function(){return null;}).then(function(){
-        _afaRunning=false;afaSetBtn('▶ Run',false);
+        _afaRunning=false;_cbtManualExpandDuringRun=false;afaSetBtn('▶ Run',false);
         var stillThere = Object.create(null), retryable = 0;
         try {
           afaScanPartiallyBatched().forEach(function(x){
@@ -13839,6 +13880,7 @@
         });
         _afaDone = Object.create(null);     /* nothing carries into the next run */
         afaSummary(results, stopped, retryable, runMode);
+        cbtReassertCollapsedIfWas(_runStartWasCollapsed); /* v23.9.247: finishing a run never expands the panel */
       });
     }
     function next(delay) {
