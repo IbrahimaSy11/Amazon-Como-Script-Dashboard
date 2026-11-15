@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.252
+// @version      23.9.253
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399P')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399P', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.252');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399Q')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399Q', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.253');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -467,8 +467,28 @@
     qaOpen(selected);
   }
 
+  /* v23.9.253: is there a non-collapsed window selection? Plain
+     clicks have none, so the QR queue functions can skip snapshotting
+     composedPath() (a full ancestor-chain allocation per mouseup) and
+     scheduling the rAF when there is nothing to open. The window
+     selection covers document text and selections inside open shadow
+     roots; closed roots are unsupported (v243) and selections inside
+     inputs/textareas live outside window.getSelection() — the COMO queue
+     checks qrControlSelection separately for those. */
+  function cbtHasWindowSelection() {
+    try {
+      var _ws = window.getSelection();
+      if (_ws && !_ws.isCollapsed) return true;
+    } catch(eSelW) {}
+    return false;
+  }
+
   function qaQueueSelectionOpen(event) {
     if (event && qaInPopup(event.target)) return;
+    /* v23.9.253: the any-site path ignores editable targets anyway
+       (qaSelectionText returns '' for them), so a window-only gate is
+       equivalent to current behaviour. */
+    if (!cbtHasWindowSelection()) return;
 
     /* Capture the useful event fields before the browser/event object is
        recycled. composedPath() is captured now for shadow-root support. */
@@ -2071,8 +2091,9 @@
       from { opacity: 0; transform: translateY(8px); }
       to   { opacity: 1; transform: translateY(0); }
     }
-    #cbt-qr-card .cbt-brand { display: block; text-align: center; font-size: 11px; color: #666; padding: 6px 8px 8px; }
-    #cbt-qr-card .cbt-brand-link { color: #1a73e8; }
+    /* v23.9.253: the two QR branding rules that were here are REMOVED
+       — v244 removed the branding line from both QR popups, so they
+       styled nothing. */
     #cbt-qr-head {
       position: relative;
       display: flex; align-items: center; justify-content: space-between;
@@ -3019,14 +3040,13 @@
       if (match) tz = match[1];
     }
 
-    /* This fallback used to serialize document.body.innerHTML once for EVERY
-       row, on EVERY sort. On a large COMO dashboard that is expensive.
-       Scan it at most once per cache window instead. */
-    if (!tz) {
-      var bodyText = document.body ? document.body.innerHTML : '';
-      var tzMatch = bodyText.match(/America\/[A-Za-z_]+/);
-      if (tzMatch) tz = tzMatch[0];
-    }
+    /* v23.9.253: the body-HTML fallback is REMOVED — the first
+       "America/..." string in the page could be any timezone (another
+       store, a help article), and it shifted every today/week/hour
+       bucket by that offset until the 10-minute cache expired. The
+       store/time element above is the only page source trusted now;
+       otherwise the store default (America/New_York, the user's store)
+       applies. */
 
     _storeTimezoneCache = tz || 'America/New_York';
     _storeTimezoneCacheAt = nowMs;
@@ -3186,6 +3206,15 @@
         var changed = nodes[i];
         if (changed.nodeType === 1 && changed.matches &&
             changed.matches('job-card,.job-card-header')) return true;
+        /* v23.9.253: the old code read textContent here — a whole-subtree
+           serialisation (string allocation) for every added/removed node.
+           A job-card inside the subtree is what can move the sort order,
+           and querySelector stops at the first match without building a
+           string; a big subtree with no job-card inside cannot carry a
+           time that moves the sort, so it is skipped entirely. Small
+           subtrees still get the text test. */
+        if (changed.nodeType === 1 && changed.querySelector && changed.querySelector('job-card,.job-card-header')) return true;
+        if (changed.nodeType === 1 && changed.childElementCount > 50) continue;
         if (time.test(changed.textContent || '')) return true;
       }
     }
@@ -3379,9 +3408,18 @@
             phEl = document.createElement('span');
             existingCol.replaceChildren(phEl);
           }
-          if (phEl.textContent !== '—') phEl.textContent = '—';
-          if (phEl.className !== 'etf-timeleft ok') phEl.className = 'etf-timeleft ok';
-          phEl.removeAttribute('data-target');
+          /* v23.9.253: if this cell already has a countdown (data-target),
+             keep it — the Batch Target is only momentarily unreadable and
+             the 1s tick keeps the last known countdown live until the
+             target returns (the 10s scan re-anchors it then). Only a cell
+             that never had a target gets the "—" placeholder: the old code
+             deleted the target here, and the tick cannot restore a
+             discarded target, so the loss was sticky. */
+          if (!phEl.hasAttribute('data-target')) {
+            if (phEl.textContent !== '—') phEl.textContent = '—';
+            if (phEl.className !== 'etf-timeleft ok') phEl.className = 'etf-timeleft ok';
+            phEl.removeAttribute('data-target');
+          }
         }
       }
       return;
@@ -3507,45 +3545,59 @@
     } finally { _cbtSectionMemo = null; _cbtSiblingMemo = null; }
   }
 
-  function tickTimers() {
-    if (document.hidden || !isDashboardView()) return;
-    document.querySelectorAll('.etf-timeleft[data-target]').forEach(function (el) {
-      var targetMs = parseInt(el.dataset.target, 10);
-      if (!targetMs) return;
-      var result = fmtTimeLeft(targetMs);
-      var nextClass = 'etf-timeleft ' + result.cls;
-      if (el.textContent !== result.text) el.textContent = result.text;
-      if (el.className !== nextClass) el.className = nextClass;
+  /* v23.9.253: the 1s tick used to do two full row scans (a
+     document-wide '.etf-timeleft[data-target]' walk, then the
+     re-assertion pass's own host walk) plus up to 3 scoped queries per
+     row (~600 selector queries/s at 200 rows). The countdown update and
+     the missing-cell re-injection are now ONE pass over the same hosts:
+     each host's row/cell/span is fetched once. tickTimers keeps its
+     hidden/dashboard early return (the tick is the countdown updater);
+     cbtReassertMissingTimers is kept as a function for compatibility
+     and calls the same pass without updating countdowns. Per-host
+     try/catch, as v250 did. Coverage is unchanged: the spans are
+     created only by injectRowTimer under job-card rows, so every
+     countdown span lives under one of these hosts. */
+  function cbtTimerHostPass(updateCountdown) {
+    document.querySelectorAll('div.row.job-card-header, job-card').forEach(function (host) {
+      try {
+        var row = null;
+        if (host.matches && host.matches('div.row.job-card-header')) row = host;
+        else {
+          try { row = host.querySelector('div.row'); } catch (eR) { row = null; }
+        }
+        if (!row) return;
+        var cell = null;
+        try { cell = row.querySelector(':scope > .etf-col-cell'); } catch (eC) { cell = null; }
+        if (cell) {
+          var span = null;
+          try { span = cell.querySelector('.etf-timeleft'); } catch (eS) { span = null; }
+          if (span && span.hasAttribute('data-target')) {
+            if (updateCountdown) {
+              var targetMs = parseInt(span.dataset.target, 10);
+              if (targetMs) {
+                var result = fmtTimeLeft(targetMs);
+                var nextClass = 'etf-timeleft ' + result.cls;
+                if (span.textContent !== result.text) span.textContent = result.text;
+                if (span.className !== nextClass) span.className = nextClass;
+              }
+            }
+            return;
+          }
+          if (span && span.textContent) return;
+        }
+        refreshTimerHost(host);
+      } catch (eHost) {}
     });
-    /* v23.9.250: the tick is also the re-assertion pass — a row that
-       lost its Time Left cell by ANY path gets it back within a
-       second, without waiting for the 10s scan or a page refresh.
-       Only rows missing a healthy cell pay for a re-injection; the
-       existence check is a shallow querySelector per row. */
-    try { cbtReassertMissingTimers(); } catch (eTickRe) {}
   }
 
-  /* Re-inject Time Left into rows that have no cell, or whose cell has
-     no readable number. A cell showing "—" (genuinely no due time) or
-     a real countdown is healthy and is left alone. */
+  function tickTimers() {
+    if (document.hidden || !isDashboardView()) return;
+    try { cbtTimerHostPass(true); } catch(eTick) {}
+  }
+
   function cbtReassertMissingTimers() {
     if (!isDashboardView()) return;
-    document.querySelectorAll('div.row.job-card-header, job-card').forEach(function (host) {
-      var row = null;
-      if (host.matches && host.matches('div.row.job-card-header')) row = host;
-      else {
-        try { row = host.querySelector('div.row'); } catch (eR) { row = null; }
-      }
-      if (!row) return;
-      var cell = null;
-      try { cell = row.querySelector(':scope > .etf-col-cell'); } catch (eC) { cell = null; }
-      if (cell) {
-        var span = null;
-        try { span = cell.querySelector('.etf-timeleft'); } catch (eS) { span = null; }
-        if (span && span.textContent) return;
-      }
-      try { refreshTimerHost(host); } catch (eH) {}
-    });
+    try { cbtTimerHostPass(false); } catch(eReassert) {}
   }
 
   var _timerMutationHosts = new Set();
@@ -4011,8 +4063,13 @@
     var cap = Math.min(CBT_REC_MAX_BATCHERS, jobs.length);
     var low = Math.min(cap, Math.max(activeTimes.length, jobs.length ? 1 : 0));
     /* At most 38 bounded trials: select the first feasible greedy plan rather
-       than assuming schedule feasibility is monotonic for every mixed queue. */
-    while (low < cap && simulate(low) > 0) low++;
+       than assuming schedule feasibility is monotonic for every mixed queue.
+       v23.9.253: if even the cap cannot clear the queue, the ladder would
+       run all the way to cap anyway — jump straight there (one simulation
+       instead of up to 38). No monotonicity is assumed: the ladder below
+       is unchanged whenever the cap CAN clear it. */
+    if (simulate(cap) > 0) low = cap;
+    else while (low < cap && simulate(low) > 0) low++;
     var missed = simulate(low);
     return { raw: low, urgentRaw: low, openCount: jobs.length, rushReserve: 0,
       overdue: overdue, dueByNextRelease: waiting.filter(function(v) { return v.deadline <= cycle.minutesToNextRelease; }).length,
@@ -4175,14 +4232,24 @@
     try {
     var total=afaSectionCount(/^Tasks\s*\(\d+\)\s*$/i), pending=0, seen=new Set(), cards=0;
     document.querySelectorAll('job-card').forEach(function(card){
+      /* v23.9.253: one bad card must not abort the whole counts pass —
+         the callers have no per-card guard and the stats fetch/apply for
+         this tick is skipped with it. */
+      try {
       if(isInExcludedSection(card) || card.closest('[hidden],[aria-hidden="true"],#cbt-panel'))return;
       if(!card.getClientRects().length)return;
       var link=card.querySelector('a[href*="jobId="]');
       var identity=link ? link.getAttribute('href') : card;
       if(seen.has(identity))return;seen.add(identity);cards++;
+      /* v23.9.253: the whole-card regex below already decides this — the
+         old fallback re-scanned every descendant (10-20k element visits
+         per call at 200 cards, 2-3x per stats cycle) and was dead code: a
+         descendant's text is a subset of the card's textContent, so when
+         the whole-card regex misses, no descendant can match either.
+         Deleted. */
       var unassigned=/\b(?:UNASSIGNABLE|ASSIGNABLE)\b/i.test(card.textContent || '');
-      if(!unassigned)unassigned=Array.from(card.querySelectorAll('span,td,div')).some(function(el){return /^(?:UNASSIGNABLE|ASSIGNABLE)$/i.test((el.textContent || '').trim());});
       if(unassigned)pending++;
+      } catch(eTaskCard) {}
     });
     /* v23.9.229: no Tasks section AND no job cards means "no data yet",
        not "0 tasks" — e.g. on a reload before Angular has rendered the
@@ -4546,6 +4613,16 @@
   var _cbtBrandObserver = null, _cbtBrandProfileObserver = null;
   var _cbtBrandLastCheck = 0, _cbtBrandCheckTimer = null;
   function cbtScheduleBrandCheck() {
+    /* v23.9.253: no brand check while the tab is hidden — a mutation
+       storm on a background tab used to schedule a check every second
+       for a brand nobody can see. At most one retry is kept pending so
+       the check still runs after the tab returns. */
+    if (document.hidden) {
+      if (_cbtBrandCheckTimer === null) {
+        _cbtBrandCheckTimer = setTimeout(function() { _cbtBrandCheckTimer = null; cbtScheduleBrandCheck(); }, 1000);
+      }
+      return;
+    }
     var now = Date.now();
     if (now - _cbtBrandLastCheck < 1000) {
       if (_cbtBrandCheckTimer === null) {
@@ -5329,7 +5406,11 @@
   var _cbtFormatters = new Map();
   var _cbtTodayCache = { scope: '', second: -1, value: '' };
   function cbtFormatter(kind, timezone, options) {
-    var key = kind + '|' + timezone;
+    /* v23.9.253: the key used to ignore `options`, so two formatters
+       of the same kind/timezone with different options shared one
+       cached instance. Latent today (each kind is always called with
+       the same options), but one wrong call site away from wrong dates. */
+    var key = kind + '|' + timezone + '|' + JSON.stringify(options || {});
     var formatter = _cbtFormatters.get(key);
     if (!formatter) {
       formatter = new Intl.DateTimeFormat('en-US', Object.assign({ timeZone: timezone }, options));
@@ -5468,7 +5549,16 @@
       if (typeof cbtArchiveHistoryDays === 'function') {
         var _dropped = {};
         Object.keys(w || {}).forEach(function(_dk){ if (!clean[_dk]) _dropped[_dk] = w[_dk]; });
-        if (Object.keys(_dropped).length) cbtArchiveHistoryDays(_dropped);
+        /* v23.9.253: if the archive save failed, the dropped days must
+           stay in the blob — the old code dropped them either way (the
+           save below writes `clean`), so a failed archive silently
+           destroyed the detail. Restore them into clean; they stay
+           until the next prune retries the archive. */
+        if (Object.keys(_dropped).length) {
+          if (cbtArchiveHistoryDays(_dropped) < 0) {
+            Object.keys(_dropped).forEach(function(_dk){ clean[_dk] = _dropped[_dk]; });
+          }
+        }
       }
     } catch(eArchSave) {}
     var json = JSON.stringify(clean);
@@ -5482,22 +5572,51 @@
     try { _oldLs = localStorage.getItem(OWN_WEEKLY_KEY); _hadOldLs = (_oldLs != null); } catch(eOldL) {}
     try { localStorage.setItem(OWN_WEEKLY_KEY, json); } catch(eWL) {}
     try { gmSet(OWN_WEEKLY_KEY, json); } catch(eWG) {}
-    gmSet(WEEKLY_PERIOD_KEY, currentWeek);
-    try { localStorage.setItem(WEEKLY_PERIOD_KEY, currentWeek); } catch(eWP) {}
+    /* v23.9.253: WEEKLY_PERIOD_KEY is NOT written here any more (see
+       below) — the blob mirrors are verified first, and the period key
+       only moves once the blob is known good (same disagreement as
+       saveHistory's DATE_KEY). The old period is snapshotted here so
+       the rollback below can restore it. */
+    var _oldPeriodGm = null, _oldPeriodLs = null, _hadOldPeriodGm = false, _hadOldPeriodLs = false;
+    try { _oldPeriodGm = gmGet(WEEKLY_PERIOD_KEY, null); _hadOldPeriodGm = (_oldPeriodGm != null); } catch(ePOG) {}
+    try { _oldPeriodLs = localStorage.getItem(WEEKLY_PERIOD_KEY); _hadOldPeriodLs = (_oldPeriodLs != null); } catch(ePOL) {}
     /* Both mirrors must hold the new value: a GM=new / LS=old split is
        exactly the divergence that double-counts on the next load (the
        loader merges a stripped aggregate with the stale live row). */
     var _lsOk = false, _gmOk = false;
     try { _lsOk = (localStorage.getItem(OWN_WEEKLY_KEY) === json); } catch(eV) {}
     try { _gmOk = (gmGet(OWN_WEEKLY_KEY, null) === json); } catch(eV2) {}
+    /* v23.9.253: hoisted out of the failure branch so the period-key
+       rollback below (which runs on the success path) can reuse it. */
+    var _rb = _hadOldGm ? _oldGm : (_hadOldLs ? _oldLs : null);
     if (!(_lsOk && _gmOk)) {
-      var _rb = _hadOldGm ? _oldGm : (_hadOldLs ? _oldLs : null);
       if (_rb != null) {
         try { gmSet(OWN_WEEKLY_KEY, _rb); } catch(eRB) {}
         try { localStorage.setItem(OWN_WEEKLY_KEY, _rb); } catch(eRB2) {}
       } else {
         try { localStorage.removeItem(OWN_WEEKLY_KEY); } catch(eRB3) {}
       }
+      return false;
+    }
+    /* v23.9.253: the period key moves only now, after the blob
+       mirrors verified, and it is verified too — both mirrors must carry
+       the new week. On any failure the blob is rolled back AND the old
+       period is restored, so the blob and its period can never disagree
+       again. */
+    var _wPeriodGmOk = false, _wPeriodLsOk = false;
+    try { localStorage.setItem(WEEKLY_PERIOD_KEY, currentWeek); } catch(eWPS) {}
+    try { gmSet(WEEKLY_PERIOD_KEY, currentWeek); } catch(eWPG) {}
+    try { _wPeriodLsOk = (localStorage.getItem(WEEKLY_PERIOD_KEY) === currentWeek); } catch(eWPV) {}
+    try { _wPeriodGmOk = (gmGet(WEEKLY_PERIOD_KEY, null) === currentWeek); } catch(eWPV2) {}
+    if (!(_wPeriodLsOk && _wPeriodGmOk)) {
+      if (_rb != null) {
+        try { gmSet(OWN_WEEKLY_KEY, _rb); } catch(eWPRB) {}
+        try { localStorage.setItem(OWN_WEEKLY_KEY, _rb); } catch(eWPRB2) {}
+      } else {
+        try { localStorage.removeItem(OWN_WEEKLY_KEY); } catch(eWPRB3) {}
+      }
+      try { if (_hadOldPeriodLs) localStorage.setItem(WEEKLY_PERIOD_KEY, _oldPeriodLs); else localStorage.removeItem(WEEKLY_PERIOD_KEY); } catch(eWPRB4) {}
+      try { if (_hadOldPeriodGm) gmSet(WEEKLY_PERIOD_KEY, _oldPeriodGm); } catch(eWPRB5) {}
       return false;
     }
     if (!skipPush) {
@@ -5557,7 +5676,10 @@
     var sourceAt = Number(source.lastAt) || 0;
     var targetAt = Number(target.lastAt) || 0;
 
-    if (!(targetRate > 0) || sourceAt > targetAt || (sourceAt === targetAt && sourceAt === 0)) {
+    /* v23.9.253: at equal timestamps of 0 the old code overwrote
+       unconditionally, so a later-merged LOWER rate won (10@0 then 5@0
+       -> 5). Keep the higher rate when neither side has a real time. */
+    if (!(targetRate > 0) || sourceAt > targetAt || (sourceAt === targetAt && sourceAt === 0 && sourceRate > targetRate)) {
       target.lastRate = sourceRate;
       target.lastAt = sourceAt;
     }
@@ -5606,7 +5728,15 @@
       out[td] = {};
       for (var i = 0; i < todayKeys.length; i++) {
         var assoc = todayKeys[i], r2 = today[assoc];
+        /* v23.9.253: carry the archived-aggregate flag (and the associate
+           key) into the rebuilt slice — the old literal dropped the flag,
+           so a capped associate's totals were counted only from the kept
+           events in Weekly (and the same unflagged row was counted as
+           legacy/unverified by the profile summary). No storage change:
+           the flag already lives on the stored row and survives
+           sanitizeHistory via cbtMergePerformance. */
         out[td][assoc] = {
+          assoc:assoc, _cbtArchivedAggregate:!!r2._cbtArchivedAggregate,
           totalPkgs: r2.totalPkgs||0,
           totalSec: r2.totalSec||0,
           runs: r2.runs||0,
@@ -6528,22 +6658,46 @@
     if (!all[k]) { all[k] = n; return true; }
     return false;
   }
+  var _cbtNamesSyncRawKey = null;
   function syncNamesFromAllTabs() {
     var all = loadAllNames();
     var added = false;
     taskCache.forEach(function(d){
       if (addNameToAll(all, d.associateId||d.associate||d.driverAssignment)) added = true;
     });
+    /* v23.9.253: the 5s background sync used to fully re-parse + re-merge
+       the whole history and weekly blobs (two JSON parses + sanitize +
+       re-summing every event) just to harvest associate NAMES. Names can
+       only change when the blobs change, so compare the four raw blob
+       strings first (cheap reads, no parse) and skip both loads when
+       nothing moved. The day rollover still runs first (it is what the
+       loadHistory call used to trigger as a side effect). */
+    try { cbtResetTodayForNewDay(); } catch(e) {}
+    var _rawKey = null;
     try {
-      var hist = loadHistory();
-      Object.keys(hist).forEach(function(a){ if (addNameToAll(all, (hist[a]&&hist[a].assoc)||a)) added = true; });
-    } catch(e) {}
-    try {
-      var weekly = loadWeekly();
-      Object.keys(weekly).forEach(function(dk){
-        Object.keys(weekly[dk]).forEach(function(a){ if (addNameToAll(all, (weekly[dk][a]&&weekly[dk][a].assoc)||a)) added = true; });
-      });
-    } catch(e) {}
+      var _hGm = gmGet(STORAGE_KEY, null), _hLs = localStorage.getItem(STORAGE_KEY),
+          _wGm = gmGet(OWN_WEEKLY_KEY, null) || gmGet(WEEKLY_KEY, null),
+          _wLs = localStorage.getItem(OWN_WEEKLY_KEY) || localStorage.getItem(WEEKLY_KEY);
+      if ((_hGm == null || typeof _hGm === 'string') && (_hLs == null || typeof _hLs === 'string') &&
+          (_wGm == null || typeof _wGm === 'string') && (_wLs == null || typeof _wLs === 'string')) {
+        _rawKey = [_hGm || '', _hLs || '', _wGm || '', _wLs || ''].join('\u0000');
+      }
+    } catch(eSyncRaw) { _rawKey = null; }
+    if (_rawKey !== null && _rawKey === _cbtNamesSyncRawKey) {
+      /* Blobs unchanged since the last sync: no new names from history/weekly. */
+    } else {
+      _cbtNamesSyncRawKey = _rawKey;
+      try {
+        var hist = loadHistory();
+        Object.keys(hist).forEach(function(a){ if (addNameToAll(all, (hist[a]&&hist[a].assoc)||a)) added = true; });
+      } catch(e) {}
+      try {
+        var weekly = loadWeekly();
+        Object.keys(weekly).forEach(function(dk){
+          Object.keys(weekly[dk]).forEach(function(a){ if (addNameToAll(all, (weekly[dk][a]&&weekly[dk][a].assoc)||a)) added = true; });
+        });
+      } catch(e) {}
+    }
     if (added) {
       try { cbtBumpNamesVersion(); } catch(e) {}
       persistAllNames();
@@ -6605,7 +6759,12 @@
       try {
         var _cutoff = cbtStoreDateKey(Date.now() - 90 * 86400000);
         Object.keys(arch.days || {}).forEach(function(dk){
-          if (dk < _cutoff) Object.keys(arch.days[dk]).forEach(function(a){ arch.days[dk][a] = cbtAggregateProfileRow(arch.days[dk][a]); });
+          /* v23.9.253: the old test compared the unpadded "M/D/YYYY" date
+             strings lexicographically, so "11/9/2026" < "8/16/2026" was
+             TRUE ('1' < '8') and October-December days were compacted
+             while still recent. Compare epoch days instead (malformed keys
+             give NaN, and NaN < x is false, so they are never compacted). */
+          if (cbtDateKeyEpoch(dk) < cbtDateKeyEpoch(_cutoff)) Object.keys(arch.days[dk]).forEach(function(a){ arch.days[dk][a] = cbtAggregateProfileRow(arch.days[dk][a]); });
         });
         json = JSON.stringify(arch);
         try { console.warn('[COMO] history archive compacted days older than 90 days to totals (size limit)'); } catch(eW2) {}
@@ -6843,8 +7002,16 @@
       if (!cbtIsDateInCurrentWeek(dk)) { _oldDays[dk] = w[dk]; delete w[dk]; changed = true; }
     }
     if (changed) {
-      try { if (typeof cbtArchiveHistoryDays === 'function') cbtArchiveHistoryDays(_oldDays); } catch(eArch) {}
-      saveWeekly(w, true, currentWeek);
+      /* v23.9.253: if the archive save failed, the old days must STAY in
+         the live blob — the old code saved the pruned blob either way
+         (the deletes above already ran), so a failed archive silently
+         destroyed the detail. Skip the save; storage still holds the
+         old days and the next call retries. The remote weekly prune
+         below still runs (it only deletes the remote copy, which is
+         display-only). */
+      var _prArchOk = true;
+      try { if (typeof cbtArchiveHistoryDays === 'function') _prArchOk = cbtArchiveHistoryDays(_oldDays) >= 0; } catch(eArch) { _prArchOk = false; }
+      if (_prArchOk) saveWeekly(w, true, currentWeek);
     }
 
     var rc = loadRemoteWeekly();
@@ -6892,6 +7059,17 @@
     } else {
       Object.keys(events).forEach(function(id){ var e=events[id];
         if (!e || typeof e !== 'object') return;
+        /* v23.9.253: apply the same validity filter the merge loop
+           applies — the old code subtracted ALL events here, including
+           ones the merge then drops (pkgs<=0, sec<5, rate>20), so the
+           legacy base came out too low (clamped at 0). Rows produced by
+           the merge always carry _cbtLegacy, so this branch only runs
+           for hand-built/stale rows, where the fix matches the merge's
+           own filter. */
+        var _vPkgs = Number(e.pkgs), _vSec = Number(e.sec);
+        if (!(_vPkgs > 0) || !(_vSec >= 5) || !isFinite(_vSec)) return;
+        var _vRate = _vPkgs / (_vSec / 60);
+        if (!(_vRate > 0) || !isFinite(_vRate) || _vRate > CBT_MAX_VALID_RATE) return;
         base.totalPkgs -= cbtNonnegative(e.pkgs); base.totalSec -= cbtNonnegative(e.sec); base.runs -= 1;
         base.totalMissing -= cbtNonnegative(e.missing); base.totalExpected -= cbtNonnegative(e.expected);
       });
@@ -6990,6 +7168,55 @@
     });
     return records;
   }
+  /* v23.9.253: a row over the sanity thresholds used to be dropped
+     whole (sanitizeHistory / sanitizeWeekly `continue`) — one bad event
+     destroyed a whole associate's day. Rebuild the row from its valid
+     events only (the same filter cbtMergePerformance applies) and keep
+     the non-event base; return null only when the rebuild is STILL over
+     threshold (a corrupt legacy base), so the caller still drops it.
+     The non-event base is the stored totals minus ALL events — NOT via
+     cbtPerformanceLegacy, whose validity filter would leave the invalid
+     events' contribution in the base (see C12). */
+  function cbtRebuildOverThresholdRow(e, assocKey) {
+    var validEvents = {};
+    Object.keys(e._cbtEvents || {}).forEach(function(id){
+      var ev = e._cbtEvents[id];
+      if (!ev || typeof ev !== 'object') return;
+      var pkgs = Number(ev.pkgs), sec = Number(ev.sec);
+      if (!(pkgs > 0) || !(sec >= 5) || !isFinite(sec)) return;
+      var rate = pkgs / (sec / 60);
+      if (!(rate > 0) || !isFinite(rate) || rate > CBT_MAX_VALID_RATE) return;
+      validEvents[id] = ev;
+    });
+    var leg = { totalPkgs: 0, totalSec: 0, runs: 0, totalMissing: 0, totalExpected: 0, bestRate: null, lastRate: null, lastAt: 0 };
+    ['totalPkgs','totalSec','runs','totalMissing','totalExpected'].forEach(function(f){ leg[f] = cbtNonnegative(e[f]); });
+    Object.keys(e._cbtEvents || {}).forEach(function(id){
+      var ev = e._cbtEvents[id];
+      if (!ev || typeof ev !== 'object') return;
+      leg.totalPkgs = Math.max(0, leg.totalPkgs - cbtNonnegative(ev.pkgs));
+      leg.totalSec = Math.max(0, leg.totalSec - cbtNonnegative(ev.sec));
+      leg.runs = Math.max(0, leg.runs - 1);
+      leg.totalMissing = Math.max(0, leg.totalMissing - cbtNonnegative(ev.missing));
+      leg.totalExpected = Math.max(0, leg.totalExpected - cbtNonnegative(ev.expected));
+    });
+    /* lastAt / lastRate come from the valid events only, so a dropped
+       event's timestamp cannot linger with a null rate. bestRate keeps
+       the stored (clamped) value — the merge below takes the max over
+       the valid events too. */
+    var _lastAt = 0, _lastRate = null;
+    Object.keys(validEvents).forEach(function(id){
+      var ev = validEvents[id];
+      if (Number(ev.at) > _lastAt) { _lastAt = Number(ev.at); _lastRate = (Number(ev.pkgs) > 0 && Number(ev.sec) >= 5) ? Number(ev.pkgs)/(Number(ev.sec)/60) : null; }
+    });
+    leg.lastAt = _lastAt; leg.lastRate = _lastRate;
+    leg.bestRate = Number(e.bestRate) > 0 && Number(e.bestRate) <= CBT_MAX_VALID_RATE ? Number(e.bestRate) : null;
+    var rebuilt = cbtMergePerformance({}, {assoc: assocKey, _cbtLegacy: leg, _cbtEvents: validEvents}, false);
+    if (rebuilt.totalPkgs > 50000 || rebuilt.runs > 300) return null;
+    if (rebuilt.totalSec > 60 && (rebuilt.totalPkgs / (rebuilt.totalSec / 60)) > CBT_MAX_VALID_RATE) return null;
+    if (e._cbtArchivedAggregate) rebuilt._cbtArchivedAggregate = true;
+    return rebuilt;
+  }
+
   function sanitizeHistory(h) {
     var clean = {};
     for (var a in (h || {})) {
@@ -6998,8 +7225,19 @@
       var pkgs = Number(e.totalPkgs) || 0;
       var runs = Number(e.runs) || 0;
       var sec  = Number(e.totalSec) || 0;
-      if (pkgs > 50000 || runs > 300) continue;
-      if (sec > 60 && (pkgs / (sec / 60)) > CBT_MAX_VALID_RATE) continue;
+      if (pkgs > 50000 || runs > 300 || (sec > 60 && (pkgs / (sec / 60)) > CBT_MAX_VALID_RATE)) {
+        /* v23.9.253: rebuild the row from its valid events instead of
+           dropping the whole associate (see cbtRebuildOverThresholdRow)
+           — the rebuilt row is kept only when it is under threshold. */
+        if (typeof cbtRebuildOverThresholdRow === 'function') {
+          var _rbH = cbtRebuildOverThresholdRow(e, a);
+          if (_rbH) {
+            var _rbKey = cbtAssociateKey(_rbH.assoc || a);
+            if (_rbKey) clean[_rbKey] = clean[_rbKey] ? cbtMergePerformance(clean[_rbKey], _rbH, true) : _rbH;
+          }
+        }
+        continue;
+      }
 
       var c = Object.assign({}, e);
       if (Number(c.bestRate) > CBT_MAX_VALID_RATE) c.bestRate = null;
@@ -7093,7 +7331,17 @@
       try { var _rw = rollDailyIntoWeekly(); if (_rw && savedDay && _rw[savedDay]) _rolledDay = _rw[savedDay]; } catch(e2r) {}
       if (_rolledDay) {
         try {
-          var _arch = JSON.stringify({ period: savedWeek, day: savedDay, data: _rolledDay });
+          /* v23.9.253: the old blob held only the single most recent day
+             and was overwritten on every Sunday crossing. Merge the day
+             into the existing blob keyed by day instead; a corrupt
+             existing blob starts fresh. (This blob is never read by the
+             script — the full old week is also archived into
+             cbt_history_archive above — so the shape change is safe.) */
+          var _archPrev = null;
+          try { _archPrev = JSON.parse(gmGet('cbt_weekly_archive', null) || localStorage.getItem('cbt_weekly_archive') || 'null'); } catch(eArchPrev) { _archPrev = null; }
+          var _archDays = (_archPrev && typeof _archPrev === 'object' && _archPrev.days && typeof _archPrev.days === 'object') ? _archPrev.days : {};
+          _archDays[savedDay] = { period: savedWeek, data: _rolledDay };
+          var _arch = JSON.stringify({ period: savedWeek, days: _archDays });
           gmSet('cbt_weekly_archive', _arch);
           try { localStorage.setItem('cbt_weekly_archive', _arch); } catch(eArchLS) {}
         } catch(eArch) {}
@@ -7106,15 +7354,24 @@
          as-is; this accumulates every old-week day. The raw
          blob is read here because loadWeekly() already
          sanitizes to the current week. */
-      try { if (typeof cbtLoadRawWeekly === 'function' && typeof cbtArchiveHistoryDays === 'function') { var _oldWeek = cbtLoadRawWeekly(); if (_oldWeek && Object.keys(_oldWeek).length) cbtArchiveHistoryDays(_oldWeek); } } catch(eArchW) {}
-      saveWeekly({}, true, currentWeek);
-      saveRemoteWeekly({}, currentWeek);
+      /* v23.9.253: if the archive save failed, the old week must STAY
+         live — the old code wiped it either way, so a failed archive
+         silently destroyed a whole week. The next same-day call retries
+         via pruneWeeklyOlderThan. The display-week cache is always
+         cleared (it forces a reload from storage either way) and the
+         Today-clearing tail below still runs (Today was already rolled
+         into weekly before the archive attempt). */
+      var _cwArchOk = true;
+      try { if (typeof cbtLoadRawWeekly === 'function' && typeof cbtArchiveHistoryDays === 'function') { var _oldWeek = cbtLoadRawWeekly(); if (_oldWeek && Object.keys(_oldWeek).length) _cwArchOk = cbtArchiveHistoryDays(_oldWeek) >= 0; } } catch(eArchW) { _cwArchOk = false; }
+      if (_cwArchOk) {
+        saveWeekly({}, true, currentWeek);
+        saveRemoteWeekly({}, currentWeek);
+        try {
+          if (_weeklyPulled) syncWeeklyPush();
+          else _weeklyPushQueued = true;
+        } catch(e3) {}
+      }
       _dispWeekCache = null;
-
-      try {
-        if (_weeklyPulled) syncWeeklyPush();
-        else _weeklyPushQueued = true;
-      } catch(e3) {}
     } else {
       try { pruneWeeklyOlderThan(WEEKLY_DAYS); } catch(e4) {}
     }
@@ -7230,19 +7487,53 @@
     var _hOldGm = null, _hOldLs = null, _hHadOldGm = false, _hHadOldLs = false;
     try { _hOldGm = gmGet(STORAGE_KEY, null); _hHadOldGm = (_hOldGm != null); } catch(eHOldG) {}
     try { _hOldLs = localStorage.getItem(STORAGE_KEY); _hHadOldLs = (_hOldLs != null); } catch(eHOldL) {}
-    try { localStorage.setItem(STORAGE_KEY, json); localStorage.setItem(DATE_KEY, todayStr()); } catch(eHS) {}
-    gmSet(STORAGE_KEY, json); gmSet(DATE_KEY, todayStr());
+    /* v23.9.253: DATE_KEY is NOT written here any more (see below) —
+       the blob mirrors are verified first, and the date key only moves
+       once the blob is known good. Writing it first meant a failed blob
+       verify rolled the blob back to yesterday while DATE_KEY still
+       said today, so yesterday's carts could be shown as Today and
+       never rolled into Weekly. The old date key is snapshotted here so
+       the rollback below can restore it. */
+    var _hOldDateGm = null, _hOldDateLs = null, _hHadOldDateGm = false, _hHadOldDateLs = false;
+    try { _hOldDateGm = gmGet(DATE_KEY, null); _hHadOldDateGm = (_hOldDateGm != null); } catch(eHDOG) {}
+    try { _hOldDateLs = localStorage.getItem(DATE_KEY); _hHadOldDateLs = (_hOldDateLs != null); } catch(eHDOL) {}
+    try { localStorage.setItem(STORAGE_KEY, json); } catch(eHS) {}
+    gmSet(STORAGE_KEY, json);
     var _hLsOk = false, _hGmOk = false;
     try { _hLsOk = (localStorage.getItem(STORAGE_KEY) === json); } catch(eHV) {}
     try { _hGmOk = (gmGet(STORAGE_KEY, null) === json); } catch(eHV2) {}
+    /* v23.9.253: hoisted out of the failure branch so the DATE_KEY
+       rollback below (which runs on the success path) can reuse it. */
+    var _hRb = _hHadOldGm ? _hOldGm : (_hHadOldLs ? _hOldLs : null);
     if (!(_hLsOk && _hGmOk)) {
-      var _hRb = _hHadOldGm ? _hOldGm : (_hHadOldLs ? _hOldLs : null);
       if (_hRb != null) {
         try { gmSet(STORAGE_KEY, _hRb); } catch(eHRB) {}
         try { localStorage.setItem(STORAGE_KEY, _hRb); } catch(eHRB2) {}
       } else {
         try { localStorage.removeItem(STORAGE_KEY); } catch(eHRB3) {}
       }
+      return false;
+    }
+    /* v23.9.253: the date key moves only now, after the blob mirrors
+       verified, and it is verified too — both mirrors must carry today.
+       On any failure the blob is rolled back AND the old date key is
+       restored (or the LS key removed if there was none), so the blob
+       and its date can never disagree again. */
+    var _today = todayStr();
+    var _hDateGmOk = false, _hDateLsOk = false;
+    try { localStorage.setItem(DATE_KEY, _today); } catch(eHDS) {}
+    try { gmSet(DATE_KEY, _today); } catch(eHDG) {}
+    try { _hDateLsOk = (localStorage.getItem(DATE_KEY) === _today); } catch(eHDV) {}
+    try { _hDateGmOk = (gmGet(DATE_KEY, null) === _today); } catch(eHDV2) {}
+    if (!(_hDateLsOk && _hDateGmOk)) {
+      if (_hRb != null) {
+        try { gmSet(STORAGE_KEY, _hRb); } catch(eHDRB) {}
+        try { localStorage.setItem(STORAGE_KEY, _hRb); } catch(eHDRB2) {}
+      } else {
+        try { localStorage.removeItem(STORAGE_KEY); } catch(eHDRB3) {}
+      }
+      try { if (_hHadOldDateLs) localStorage.setItem(DATE_KEY, _hOldDateLs); else localStorage.removeItem(DATE_KEY); } catch(eHDRB4) {}
+      try { if (_hHadOldDateGm) gmSet(DATE_KEY, _hOldDateGm); } catch(eHDRB5) {}
       return false;
     }
     if (!skipPush) { setTimeout(function(){ if (typeof syncHistoryPush === 'function') syncHistoryPush(); }, 0); }
@@ -7743,7 +8034,11 @@
     cbtScheduleHofRender();
   }
   function hofRecordBatch(assoc, pkgs, elapsedSec, rate, completion) {
-    if (!assoc) return;
+    /* v23.9.253: a batch without a completion id cannot be deduped — the
+       flush's no-id fallback unconditionally adds +1 run / +pkgs, so any
+       retry of the same batch double-counts it. The only caller
+       (recordCompletedBatch) always passes {id, at, revision}. */
+    if (!assoc || !completion || !completion.id) return;
     var key = hofKey(assoc);
     if (!key) return;
     /* v23.9.226: enqueue — the flush (above) does one load/merge/save for
@@ -7781,19 +8076,21 @@
   var _cbtHofRowsCache = null, _cbtHofRowsCacheKey = '';
   function cbtInvalidateHofRows() { _cbtHofRowsCache = null; _cbtHofRowsCacheKey = ''; }
   function cbtHofRawKey() {
-    /* v23.9.243: each blob contributes its length plus 8 evenly-spaced
-       char codes (sampled, not a full walk) — two different datasets of
-       the same length no longer collide unless their samples also match.
-       The sampling is inline (no separate helper) so extract-based tests
-       that pull cbtHofRawKey alone keep working. */
+    /* v23.9.253: the old key sampled only 8 evenly-spaced char codes,
+       so two same-length blobs differing at an unsampled position
+       produced identical keys (and a stale Fastest cache). Hash the FULL
+       blob (djb2-style, same `length:sig` format) — the key only affects
+       cache invalidation, so a more sensitive key can only cause more
+       recomputation, never stale data. The hashing stays inline (no
+       separate helper) so extract-based tests that pull cbtHofRawKey
+       alone keep working. */
     function _sample(v) {
       if (v == null) return 'null';
       var raw = String(v);
       if (!raw.length) return '0';
-      var sig = 0;
-      for (var i = 0; i < 8; i++) {
-        var idx = Math.floor((i * (raw.length - 1)) / 7);
-        sig = (sig * 31 + raw.charCodeAt(idx)) >>> 0;
+      var sig = 5381;
+      for (var i = 0; i < raw.length; i++) {
+        sig = ((sig << 5) + sig + raw.charCodeAt(i)) >>> 0;
       }
       return raw.length + ':' + sig;
     }
@@ -8093,6 +8390,10 @@
     var row=computeRow(data), now=cbtNowMs();
     var key=String(STORE_ID)+'|'+String(data.jobId || data.id || data.shortClientRef || '');
     var owner=String(data.associateId || data.associate || data.driverAssignment || '').trim().toLowerCase();
+    /* v23.9.253: a stable associate id for the owner comparison below —
+       the display name alone ("jdoe" vs "John Doe", same person) used to
+       count as a reassignment and reset the live clock. */
+    var ownerId=String(data.associateId || '').trim().toLowerCase();
     var generation=cbtTaskGeneration(data), start=null, count=Number(data.packagesBatched);
     var ops=Array.isArray(data.operationDetails)?data.operationDetails:[];
     ops.forEach(function(op){
@@ -8100,25 +8401,38 @@
       var state=String(op.state || op.operationState || '').toUpperCase();
       if(cbtNormalizeEpochMs(op.end) || /^(COMPLETED|COMPLETE|FINISHED|DONE)$/.test(state))return;
       var time=cbtNormalizeEpochMs(op.start);
-      if(time && time<=now && now-time<=CBT_MAX_LIVE_AGE_MS && (!start || time>start))start=time;
+      /* v23.9.253: the EARLIEST open BATCHING start, not the latest —
+         computeRow / recordCompletedBatch measure the attempt from its
+         first start, so the live row used to show a shorter elapsed (and
+         a higher rate) than the recorded one whenever a job was paused
+         and resumed or the API re-sent the op list. */
+      if(time && time<=now && now-time<=CBT_MAX_LIVE_AGE_MS && (!start || time<start))start=time;
     });
-    var prior=_cbtCurrentAttempts.get(key), changedOwner=prior && owner && prior.owner && owner!==prior.owner;
-    /* v23.9.225 (audit B4): the both-batch: exemption only holds while the
-       previous attempt was still live. If the previous job is finished, a
-       reused cart ref is a new job and must reset its clock and baseline. */
-    var _prevLive = false;
-    try { var _prevData = taskCache.get(String(data.shortClientRef || '')); _prevLive = _prevData ? cbtIsLiveBatch(_prevData) : false; } catch(ePrevLive) {}
+    /* v23.9.253: the owner changed only when the stable ids differ
+       too — a display-name spelling change for the same associate is not
+       a reassignment. When no stable id exists on either side, the name
+       comparison stands. */
+    var prior=_cbtCurrentAttempts.get(key), changedOwner=prior && owner && prior.owner && owner!==prior.owner &&
+      !(ownerId && prior.ownerId && ownerId===prior.ownerId);
+    /* v23.9.253: a new job is declared only when BOTH generations are
+       stable `job:` identities that differ. The old both-`batch:`
+       exemption (and its taskCache liveness lookup) is subsumed: a partial
+       response that falls back to `created:` / `batch:` no longer resets
+       the clock just because the API omitted jobId/created this time. A
+       genuinely new job on a reused cart ref still resets via `newAttempt`
+       (its BATCHING start differs) or `changedOwner`. */
     var newJob=prior && generation && prior.generation && generation!==prior.generation &&
-      !(String(generation).indexOf('batch:')===0 && String(prior.generation).indexOf('batch:')===0 && _prevLive);
+      String(generation).indexOf('job:')===0 && String(prior.generation).indexOf('job:')===0;
     var newAttempt=prior && start && prior.apiStart && start!==prior.apiStart;
     if(!prior || newJob || newAttempt || changedOwner || (isFinite(count) && count<prior.lastPkgs)) {
       // A reassignment timestamp is not supplied by this API. Never claim the
       // previous owner's start as the new owner's time; label observation time.
-      prior={owner:owner,generation:generation,apiStart:start,ms:changedOwner&&!newJob&&!newAttempt?now:start,
+      prior={owner:owner,ownerId:ownerId,generation:generation,apiStart:start,ms:changedOwner&&!newJob&&!newAttempt?now:start,
         observed:!!(changedOwner&&!newJob&&!newAttempt),baseAt:now,basePkgs:count,lastPkgs:count,lastChangeAt:now,pausedSince:0};
       _cbtCurrentAttempts.set(key,prior);
     } else {
       if(!prior.owner && owner)prior.owner=owner;
+      if(ownerId && !prior.ownerId)prior.ownerId=ownerId;
       if(!prior.ms && start){prior.ms=start;prior.apiStart=start;}
       /* v23.9.225 (audit A4): pause detection. A cart that has not batched a
          package for >3 minutes is paused: freeze elapsed at the 3-minute
@@ -8341,9 +8655,18 @@
         _capIds.sort(function(a,b){ return (Number((_capEvts[a]||{}).at)||0) - (Number((_capEvts[b]||{}).at)||0); });
         var _capExcess = _capIds.slice(0, _capIds.length - CBT_MAX_LIVE_EVENTS_PER_ASSOC_DAY);
         var _capRow = {assoc:assoc, _cbtEvents:{}};
-        _capExcess.forEach(function(_id){ _capRow._cbtEvents[_id]=_capEvts[_id]; delete _capEvts[_id]; });
+        _capExcess.forEach(function(_id){ _capRow._cbtEvents[_id]=_capEvts[_id]; });
         var _capDays = {}; _capDays[day] = {}; _capDays[day][assoc] = _capRow;
-        cbtArchiveHistoryDays(_capDays);
+        /* v23.9.253: the archive runs FIRST, on a copy of the excess
+           events, and the live row is only pruned when it succeeds. The
+           old code deleted the excess from the live row BEFORE the
+           archive call, so a failed archive save silently destroyed the
+           detail. On failure the live row is left untouched (over 200
+           events this once); the next completion retries the cap. */
+        var _capArchOk = true;
+        try { _capArchOk = cbtArchiveHistoryDays(_capDays) >= 0; } catch(eCapArch) { _capArchOk = false; }
+        if (_capArchOk) {
+        _capExcess.forEach(function(_id){ delete _capEvts[_id]; });
         /* v23.9.243: the rebuilt live row must KEEP the capped carts' totals
            in its legacy base. The old code passed cbtPerformanceLegacy() of
            the pruned row — which is only the pre-event base — so the capped
@@ -8367,12 +8690,20 @@
         _capLegacy.lastAt = _capLastAt;
         history[assoc] = cbtMergePerformance({}, Object.assign({}, history[assoc], {_cbtLegacy: _capLegacy, _cbtEvents: _capEvts}), true);
         history[assoc]._cbtArchivedAggregate = true;
+        }
       }
     } catch(eCap) {}
     captureName(data);
     if (_archiveOnly) { /* v23.9.243 (D3): out-of-week completion — archive it (dedupe by event id) instead of saving it into a week it does not belong to. */
       var _ad = {}; _ad[day] = {}; _ad[day][assoc] = history[assoc];
-      try { if (typeof cbtArchiveHistoryDays === 'function') cbtArchiveHistoryDays(_ad); } catch(eArchOW) {}
+      /* v23.9.253: if the archive save failed, drop the completion memo
+         (set at the top of this function) so a later presentation of the
+         same cart retries the archive instead of being suppressed
+         forever — the cart is recorded nowhere until the archive
+         succeeds. */
+      var _owArchOk = true;
+      try { if (typeof cbtArchiveHistoryDays === 'function') _owArchOk = cbtArchiveHistoryDays(_ad) >= 0; } catch(eArchOW) { _owArchOk = false; }
+      if (!_owArchOk) { try { _cbtCompletionMemo.delete(memoKey); } catch(eMemoDel) {} }
     } else if (weekly) { weekly[day]=history; saveWeekly(weekly);
       if (_archRev) { var _rd = {}; _rd[day] = {}; _rd[day][assoc] = history[assoc];
         try { if (typeof cbtArchiveHistoryDays === 'function') cbtArchiveHistoryDays(_rd); } catch(eArchRevSave) {} }
@@ -8391,7 +8722,17 @@
     var existing = taskCache.get(ref);
     var sequence = _cbtIngestSequence || ++_cbtRequestSequence;
     if (sequence < (_cbtTaskSequences.get(ref) || 0)) return false;
-    if (!authoritative && sequence <= _cbtLastSnapshotSequence && !_cbtSnapshotRefs.has(ref)) return false;
+    /* v23.9.253: a completed item is exempt from the sequence guard —
+       a /complete or job-detail fetch that STARTED before the snapshot
+       (so its sequence is older) used to be dropped even though its data
+       is fresher than the snapshot, and completed carts are by
+       definition not in _cbtSnapshotRefs, so the snapshot drop-off path
+       could delete a live cart with no completion ever recorded. The
+       downstream guards still apply (updatedAt compare, completion memo,
+       previous-event compare, owner reconciliation). */
+    var _incomingDone = false;
+    try { var _incInfo = cbtBatchingOpInfo(incoming, false); _incomingDone = !!(_incInfo && _incInfo.endMs); } catch(eIncDone) {}
+    if (!_incomingDone && !authoritative && sequence <= _cbtLastSnapshotSequence && !_cbtSnapshotRefs.has(ref)) return false;
     ['associateId','associate','driverAssignment'].forEach(function(field){
       if (typeof incoming[field] === 'string') incoming[field] = incoming[field].trim();
     });
@@ -8990,7 +9331,10 @@
     var p = document.getElementById('cbt-panel');
     if (!p) return;
     if (p._cbtParked) return; /* already parked */
-    if (p._cbtStopResize) p._cbtStopResize();
+    /* v23.9.253: guarded like the width anchor and the brand-observer
+       disconnect below — a throw here (mid-drag detach) used to abort
+       the park and leave the panel visible on a task/Packages page. */
+    if (p._cbtStopResize) { try { p._cbtStopResize(); } catch(eStopResize) {} }
     if (p._cbtStopWidthAnchor) { try { p._cbtStopWidthAnchor(); } catch(eWaD) {} p._cbtStopWidthAnchor = null; }
     try { if (_cbtBrandObserver) { _cbtBrandObserver.disconnect(); } _cbtBrandObserver = null; } catch(eBrandPark) {}
     p.style.width = '';
@@ -9065,7 +9409,15 @@
       if (!parent) return;
       var sync = function() {
         try {
-          if (!panel.isConnected) return;
+          /* v23.9.253: never write a width to a parked panel (an rAF
+             scheduled just before a park used to fire afterwards), and
+             drop the observer if its parent is gone. */
+          if (!panel.isConnected || panel._cbtParked) return;
+          if (parent.isConnected === false) {
+            try { if (typeof panel._cbtStopWidthAnchor === 'function') panel._cbtStopWidthAnchor(); } catch(eDisc) {}
+            panel._cbtStopWidthAnchor = null;
+            return;
+          }
           var cs = null;
           try { cs = getComputedStyle(parent); } catch(eCs) {}
           var w = parent.clientWidth || 0;
@@ -9101,10 +9453,19 @@
        panel parked and the retry chain re-runs injectPanel(). */
     var wasParked = !!(existing && existing._cbtParked);
     if (existing && existing.isConnected && !wasParked) return;
+    /* v23.9.253: a DOM panel that is NOT the cached node (a stale twin
+       from a second injection) is removed so two #cbt-panel nodes can
+       never coexist. */
+    if (existing && existing !== _panel2Ref) { try { existing.remove(); } catch(eStalePanel) {} }
 
     if (!_panel2Ref) {
-      _panel2Ref = buildPanel();
-      attachPanelEvents(_panel2Ref);
+      /* v23.9.253: only keep the built node if the attach succeeds — a
+         throw halfway through attachPanelEvents used to leave a
+         half-wired panel cached, so the toggle/theme/drag handlers were
+         dead and attach was never retried. */
+      var _builtPanel = null;
+      try { _builtPanel = buildPanel(); attachPanelEvents(_builtPanel); _panel2Ref = _builtPanel; }
+      catch(eAttachPanel) { _panel2Ref = null; return; }
     }
 
     var mount = findMountPoint();
@@ -9162,7 +9523,17 @@
     } catch(ex) {}
     }
 
-    mount.el.parentNode.insertBefore(_panel2Ref, mount.el);
+    /* v23.9.253: the insert is the one unguarded DOM move in the unpark
+       path — the parked flag was already cleared above, so if Angular
+       replaced the mount parent between findMountPoint() and this line,
+       the throw left the panel parked-but-flagged-mounted forever (every
+       later check believed it was mounted). Restore the parked state on
+       failure so the retry chain unparks it on the next tick. */
+    try { mount.el.parentNode.insertBefore(_panel2Ref, mount.el); }
+    catch(eInsert) {
+      if (wasParked) { try { _panel2Ref._cbtParked = true; _panel2Ref.style.display = 'none'; } catch(eRepark) {} }
+      return;
+    }
     try { cbtAnchorPanelWidth(_panel2Ref, mount.el.parentNode); } catch(eAnchorMount) {}
     try { cbtEnsureBranding(); cbtStartBrandObserver(); } catch(eBrandMount) {}
 
@@ -9958,9 +10329,29 @@
     } catch(e) {}
   }
   var _cbtVerifiedReportCacheByKey = Object.create(null);
+  /* v23.9.253: server-anchored wall time WITHOUT the monotonic clamp
+     cbtNowMs applies for elapsed timers. Used only for the "event dated
+     in the future" validity check below: after a device clock jumps
+     forward and back, the clamped clock stays at the forward value and
+     a genuinely future-dated event would pass the filter. A 5-minute
+     grace (the same window recordCompletedBatch treats as a credible
+     end time) keeps a just-recorded cart from being excluded while a
+     corrected clock catches up. The typeof guards keep this safe when
+     the function is extracted alone in a test harness. */
+  function cbtWallNowMs() {
+    var now;
+    if (typeof _cbtClockAnchorServerMs !== 'undefined' && _cbtClockAnchorServerMs != null &&
+        typeof _cbtClockAnchorPerfMs !== 'undefined' && _cbtClockAnchorPerfMs != null &&
+        typeof cbtPerfNow === 'function') {
+      now = _cbtClockAnchorServerMs + (cbtPerfNow() - _cbtClockAnchorPerfMs);
+    } else {
+      now = Date.now();
+    }
+    return isFinite(now) ? now : Date.now();
+  }
   function cbtVerifiedReports(slices, weekly) {
     var days={}, owners=new Map(), legacy=new Set(), excluded=0;
-    var tz=getStoreTimezone(), currentDay=todayStr(), now=cbtNowMs();
+    var tz=getStoreTimezone(), currentDay=todayStr(), now=cbtNowMs(), nowWall=cbtWallNowMs();
     var source=weekly?slices:(slices && slices[currentDay]) || slices;
     var cacheKey=String(STORE_ID)+'|'+tz+'|'+currentDay+'|'+weekly+'|'+_cbtHistoryDataVersion;
     var cached=_cbtVerifiedReportCacheByKey[cacheKey];
@@ -9985,7 +10376,7 @@
             sec=(at-start)/1000;
           }
           var rate=pkgs*60/sec;
-          if (!isFinite(at) || at<=0 || at>now || isNaN(new Date(at).getTime()) ||
+          if (!isFinite(at) || at<=0 || at>nowWall + 5*60*1000 || isNaN(new Date(at).getTime()) ||
               !isFinite(sec) || sec<5 || !isFinite(pkgs) || pkgs<=0 ||
               !isFinite(rate) || rate>CBT_MAX_VALID_RATE) {excluded++;return;}
           var day=dateFmt.format(new Date(at));
@@ -10201,9 +10592,15 @@
       for (var a in w[dk]) {
         var e = w[dk][a];
         if (!e || typeof e !== 'object') continue;
-        if ((e.totalPkgs||0) > 50000 || (e.runs||0) > 300) continue;
         var sec = Number(e.totalSec) || 0;
-        if (sec > 60 && (Number(e.totalPkgs)||0) / (sec / 60) > CBT_MAX_VALID_RATE) continue;
+        if ((e.totalPkgs||0) > 50000 || (e.runs||0) > 300 || (sec > 60 && (Number(e.totalPkgs)||0) / (sec / 60) > CBT_MAX_VALID_RATE)) {
+          /* v23.9.253: rebuild instead of dropping (see sanitizeHistory). */
+          if (typeof cbtRebuildOverThresholdRow === 'function') {
+            var _rbW = cbtRebuildOverThresholdRow(e, a);
+            if (_rbW) clean[dk][a] = _rbW;
+          }
+          continue;
+        }
 
         var c = Object.assign({}, e);
         if (Number(c.bestRate) > CBT_MAX_VALID_RATE) c.bestRate = null;
@@ -10237,10 +10634,15 @@
       }
     }
     var all=Object.values(agg).filter(cbtHasPerformanceData).map(function(a){
+      /* v23.9.253: the caps below bound only the DISPLAYED integers.
+         Rates used to be computed from the capped values, so an associate
+         over 100,000 pkgs / 500 h / 500 runs showed a distorted Avg Rate.
+         avgRate (and the summary below) now use the uncapped totals. */
       var pkgs = Math.min(a.totalPkgs, 100000);
       var sec  = Math.min(a.totalSec,  500*3600);
       var runs = Math.min(a.runs, 500);
-      return{assoc:a.assoc,totalPkgs:pkgs,totalSec:sec,runs:runs,days:a.daysSet.size,avgRate:sec>0?pkgs/(sec/60):0,
+      return{assoc:a.assoc,totalPkgs:pkgs,totalSec:sec,runs:runs,days:a.daysSet.size,avgRate:a.totalSec>0?a.totalPkgs/(a.totalSec/60):0,
+        rawPkgs:a.totalPkgs,rawSec:a.totalSec,
         bestRate:Number(a.bestRate)>0?Number(a.bestRate):null,
         lastRate:Number(a.lastRate)>0?Number(a.lastRate):null,lastAt:Number(a.lastAt)||0,
         hrs:sec,missPct:a.totalExpected>0?(a.totalMissing/a.totalExpected*100):0,
@@ -10251,8 +10653,8 @@
       return;}
     empty.style.display='none';
     if(summary){
-      var tA=all.length,tS=all.reduce(function(s,e){return s+e.totalSec;},0);
-      var oR=tS>0?all.reduce(function(s,e){return s+e.totalPkgs;},0)/(tS/60):0;
+      var tA=all.length,tS=all.reduce(function(s,e){return s+(e.rawSec||e.totalSec);},0);
+      var oR=tS>0?all.reduce(function(s,e){return s+(e.rawPkgs||e.totalPkgs);},0)/(tS/60):0;
       /* v23.9.225 (audit D4): Weekly Avg Miss % was an unweighted mean of
          the per-associate percentages (1 cart at 100% + 10 carts at 0% = 50%,
          true 9.1%). Pool it like Today — sum missing / sum expected — and
@@ -10314,13 +10716,26 @@
   function savedNamesSearchHTML(term, excludeSet) {
     term = (term||'').toLowerCase().trim();
     if (!term) return '';
-    var all = loadAllNames();
+    /* v23.9.253: the old code re-read the whole saved-names blob and
+       re-sorted all 20,000 names on EVERY keystroke (the unified search
+       also pays two full verified-report passes per keystroke, so this
+       was the third full scan in one input). The cached sorted list
+       (cbtSortedNames, version-keyed) is the same display names in the
+       same localeCompare order. The exclude check uses the canonical key
+       carried next to each display name — the sets callers pass hold
+       keys like 'jdoe', not display names like 'John Doe', so checking
+       the lowercased display name would fail to exclude anyone already
+       shown above. The filter, the excludeSet check, the order, and
+       the "+N more" count are all unchanged. */
     var matches = [];
-    for (var k in all) {
-      if (k.indexOf(term) !== -1 && (!excludeSet || !excludeSet.has(k))) matches.push(all[k]);
+    var _cachedNames = cbtSortedNames();
+    var names = _cachedNames.names, keys = _cachedNames.keys || [];
+    for (var i = 0; i < names.length; i++) {
+      var n = names[i];
+      var k = keys[i] || n.toLowerCase();
+      if (n.toLowerCase().indexOf(term) !== -1 && (!excludeSet || !excludeSet.has(k))) matches.push(n);
     }
     if (!matches.length) return '';
-    matches.sort(function(a,b){ return a.toLowerCase().localeCompare(b.toLowerCase()); });
     matches = prioritizeNameMatches(matches, term, function(n){ return n; });
     var html = '<div class="cbt-search-result-section">SAVED NAMES</div>';
     matches.slice(0, 50).forEach(function(n){
@@ -10347,9 +10762,17 @@
     var all = loadAllNames();
     var key = String(_cbtNamesVersion) + '|' + Object.keys(all).length;
     if (_cbtNamesSortedCache && _cbtNamesSortedCacheKey === key) return _cbtNamesSortedCache;
-    var names = Object.keys(all).map(function(k){ return all[k]; });
-    names.sort(function(a,b){ return a.toLowerCase().localeCompare(b.toLowerCase()); });
-    _cbtNamesSortedCache = { names: names, totalCount: names.length };
+    /* v23.9.253 (L2): keep the canonical key next to each display name,
+       in the same sorted order — savedNamesSearchHTML excludes by key
+       (the sets its callers pass hold canonical keys like 'jdoe', not
+       display names like 'John Doe'), and a display name lowercased is
+       NOT its key. .names stays the same display names in the same
+       order, so the Names tab render is unaffected. */
+    var pairs = Object.keys(all).map(function(k){ return {k:k, n:all[k]}; });
+    pairs.sort(function(a,b){ return a.n.toLowerCase().localeCompare(b.n.toLowerCase()); });
+    var names = pairs.map(function(p){ return p.n; });
+    var keys = pairs.map(function(p){ return p.k; });
+    _cbtNamesSortedCache = { names: names, keys: keys, totalCount: names.length };
     _cbtNamesSortedCacheKey = key;
     return _cbtNamesSortedCache;
   }
@@ -10472,6 +10895,9 @@
 
     var nowMs = cbtNowMs();
     tbody.querySelectorAll('.cbt-elapsed[data-live="1"]').forEach(function(el){
+      /* v23.9.253: one bad elapsed span must not abort the whole tick
+         (the v250 per-host pattern, extended to this pass). */
+      try {
       var startMs = parseFloat(el.dataset.start);
       if (!startMs) return;
 
@@ -10483,6 +10909,7 @@
 
       if (el.className !== nextClass) el.className = nextClass;
       if (el.textContent !== nextText) el.textContent = nextText;
+      } catch(eLiveEl) {}
     });
   }
 
@@ -10816,9 +11243,12 @@
     }
 
     if (!_tpRef) {
-      _tpRef = buildTaskPanel();
-      tpAttachDrag(_tpRef);
-      tpAttachEvents(_tpRef);
+      /* v23.9.253: same as injectPanel above — a failed attach leaves
+         nothing half-wired cached, so the next health tick retries the
+         whole build+attach. */
+      var _tpBuilt = null;
+      try { _tpBuilt = buildTaskPanel(); tpAttachDrag(_tpBuilt); tpAttachEvents(_tpBuilt); _tpRef = _tpBuilt; }
+      catch(eAttachTp) { _tpRef = null; return; }
     }
     document.body.appendChild(_tpRef);
     applyUiScale();
@@ -11256,6 +11686,9 @@
       var _sameInput = _qrOverlay.querySelector('#cbt-qr-input');
       if (_sameInput) _sameInput.value = text;
       qrRender(text);
+      /* v23.9.253: re-highlighting the same text is fresh interaction —
+         restart the 60s auto-close, or the popup could close ~1s later. */
+      qrStartAutoClose();
       return;
     }
 
@@ -11456,6 +11889,15 @@
 
   function qrQueueSelectionOpen(event) {
     if (event && qrInScriptUI(event.target)) return;
+    /* v23.9.253: plain clicks have no selection — skip the composedPath()
+       snapshot below. Inputs keep their selection outside
+       window.getSelection(), so an input selection still passes via
+       qrControlSelection. */
+    if (!cbtHasWindowSelection()) {
+      var _ctlSel = '';
+      try { _ctlSel = qrControlSelection(event.target); } catch(eCtlSel) {}
+      if (!_ctlSel) return;
+    }
 
     if (_qrSelectionTimer) {
       clearTimeout(_qrSelectionTimer);
@@ -11835,7 +12277,11 @@
 
   function p1hApplyCachedToNode(node) {
     if (!node || node.nodeType !== 1) return;
-    if (node.matches && node.matches('job-card')) p1hApplyCachedToCard(node);
+    /* v23.9.253: the node itself is usually the job-card (one mutation
+       per card) — the old code paid a whole-subtree querySelectorAll for
+       every one of those. A job-card never nests another job-card, so
+       apply and return without the subtree walk. */
+    if (node.matches && node.matches('job-card')) { p1hApplyCachedToCard(node); return; }
     if (node.querySelectorAll) {
       node.querySelectorAll('job-card').forEach(p1hApplyCachedToCard);
     }
@@ -12244,6 +12690,12 @@
 
         if (typeof value === 'string' && !excludedPath(nextPath)) {
           var cart = afaMissingCartValue(value);
+          /* v23.9.253: the assigned-cart path must enforce the same
+             plain-cart rule as the location fallback (v245) — a slot or
+             PB value (CART_PB2200_SLOT_4) in a task field is not a cart
+             and never becomes a QR, even if it appears in a cart-named
+             field. */
+          if (cart && !/^CART_(?!PB|.*_SLOT_)[A-Z0-9]+$/i.test(cart)) cart = '';
           if (cart) {
             var score = 0;
             if (/^(?:assigned|batching|destination)?cart(?:id|code|label|name|scannableid|barcode)?$/.test(normalized)) score += 140;
@@ -14962,6 +15414,8 @@
   /* The assign modal is created on demand and its shadow roots appear with
      it, so poll for the field rather than assuming it exists at load. */
   var _cbtAcLastScan = 0;
+  /* v23.9.253: last DOM mutation seen by the autocomplete observer (F11). */
+  var _cbtAcLastMutation = 0;
   function acScanForFields() {
     _cbtAcLastScan = Date.now();
     try { acWatchAssignModal(); } catch(e) {}
@@ -15022,6 +15476,11 @@
       }, 140);
 
       _acObserver = new MutationObserver(function(mutations){
+        /* v23.9.253: stamp every firing, even while hidden, so a modal
+           opened while the tab was away is not missed by the 1s watch
+           below — the interval skips re-scanning only when no mutation
+           has fired since the last scan. */
+        _cbtAcLastMutation = Date.now();
         if (document.hidden) return;
         for (var i = 0; i < mutations.length; i++) {
           if (mutations[i].type==='attributes' && !_acDrop) continue;
@@ -15040,7 +15499,13 @@
     _acWatch = setInterval(function(){
       try {
         if (_acDrop) acTick();
-        if (!document.hidden && acWatchRelevant() && Date.now() - _cbtAcLastScan >= 2000) acScanForFields();
+        /* v23.9.253: the 1s watch used to re-scan every input on the page
+           every 2s even when a field was already bound and nothing had
+           changed. Skip the scan when a field is bound AND no mutation
+           has fired since the last scan — the observer above still fires
+           acScanForFields on any DOM change. */
+        if (!(_acInput && _acInput.isConnected && _cbtAcLastMutation < _cbtAcLastScan) &&
+            !document.hidden && acWatchRelevant() && Date.now() - _cbtAcLastScan >= 2000) acScanForFields();
       } catch(e2) {}
     }, 1000);  /* v23.9.223: was 450ms / 900ms — the observer still fires immediately on modal changes */
 
@@ -15103,9 +15568,12 @@
     /* Re-save local Today through the new sanitizer. */
     try {
       var h = null;
-      var gh = gmGet(STORAGE_KEY, null);
-      if (gh) h = typeof gh === 'string' ? JSON.parse(gh) : gh;
-      if (!h) h = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      /* v23.9.253: parse the GM value and the localStorage value in
+         separate try/catch blocks — a corrupt GM blob used to abort the
+         localStorage fallback (same try), silently skipping the
+         migration for the session. */
+      try { var gh = gmGet(STORAGE_KEY, null); if (gh) h = typeof gh === 'string' ? JSON.parse(gh) : gh; } catch(eMigGH) { h = null; }
+      if (!h) { try { h = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'); } catch(eMigLH) { h = null; } }
       if (h && typeof h === 'object') {
         var cleanH = sanitizeHistory(h);
         var hJson = JSON.stringify(cleanH);
@@ -15117,9 +15585,9 @@
     /* Re-save local Weekly through the new sanitizer. */
     try {
       var wk = null;
-      var gw = gmGet(OWN_WEEKLY_KEY, null);
-      if (gw) wk = typeof gw === 'string' ? JSON.parse(gw) : gw;
-      if (!wk) wk = JSON.parse(localStorage.getItem(OWN_WEEKLY_KEY) || '{}');
+      /* v23.9.253: same separate-parse fix as the Today branch above. */
+      try { var gw = gmGet(OWN_WEEKLY_KEY, null); if (gw) wk = typeof gw === 'string' ? JSON.parse(gw) : gw; } catch(eMigGW) { wk = null; }
+      if (!wk) { try { wk = JSON.parse(localStorage.getItem(OWN_WEEKLY_KEY) || '{}'); } catch(eMigLW) { wk = null; } }
       if (wk && typeof wk === 'object') {
         var cleanW = sanitizeWeekly(wk);
         var wJson = JSON.stringify(cleanW);
@@ -15231,7 +15699,12 @@
        This runs before the first paint of the newly visible page, so
        the number is back the moment the user looks at the dashboard. */
     try { if (isDashboardView()) { injectAllTimers(); tickTimers(); } } catch(e9t) {}
-    try { p1hApplyCachedToNode(document.body); p1hScheduleVisibleScan(); } catch(e9h) {}
+    /* v23.9.253: the full-body P1H scan below is REMOVED — the visible
+       scan scheduled on the same line re-scans the visible cards anyway,
+       so this was a second full job-card walk on every return,
+       synchronously before first paint. Timer healing stays synchronous
+       (the countdowns are user-visible, v250). */
+    try { p1hScheduleVisibleScan(); } catch(e9h) {}
   }
   function cbtRegisterReturnHandler() {
     if (_cbtReturnHandlerRegistered) return;
@@ -15585,7 +16058,11 @@
       hours:Object.keys(hours).map(function(k){return hours[k];}).sort(function(a,b){return a.at-b.at;}),
       untrackedCarts:legacyCarts,
       untrackedPkgs:legacyPkgs,
-      shortCarts:shortCarts};
+      shortCarts:shortCarts,
+      /* v23.9.253: how much of the totals comes from archived days whose
+         per-cart detail is gone by design (see the note below). */
+      archivedCarts:Math.max(0,_foldRuns-trackedCarts),
+      archivedPkgs:Math.max(0,_foldPkgs-trackedPkgs)};
   }
   function cbtProfileLiveRate(assoc) {
     /* v23.9.225 (audit A8): the profile used computeRow's full-span rate
@@ -15723,7 +16200,7 @@
       return [h.at,h.label,h.carts,h.pkgs,h.sec,
         h.details.map(function(d){return [d.ref,d.start,d.end,d.pkgs,d.rate].join(',');}).sort().join(';')].join('|');
     }).join('~');
-    var renderKey=[STORE_ID,p.period,timezone,m.carts,m.pkgs,m.average,m.fastest,m.latest,current,m.hours.length,m.lastAt,m.lastId,m.shortCarts,p.expandedHour,m.untrackedCarts,m.untrackedPkgs,_fp].join('|');
+    var renderKey=[STORE_ID,p.period,timezone,m.carts,m.pkgs,m.average,m.fastest,m.latest,current,m.hours.length,m.lastAt,m.lastId,m.shortCarts,p.expandedHour,m.untrackedCarts,m.untrackedPkgs,m.archivedCarts,m.archivedPkgs,_fp].join('|');
     if (p._lastProfileRenderKey===renderKey) return;
     p._lastProfileRenderKey=renderKey;
     var metrics=[['Total carts',m.carts],['Total packages',m.pkgs],['Average rate',rate(m.average)],['Fastest rate',rate(m.fastest)],['Current live rate',rate(current)],['Latest cart rate',rate(m.latest)]];
@@ -15753,6 +16230,7 @@
     setHTML(tbody,html);
     var note='Store time: '+timezone+'. Carts and packages are grouped by completion hour. Rates are packages per minute of recorded batching time.';
     if (m.untrackedCarts || m.untrackedPkgs) note+=' Older unverified totals: '+m.untrackedCarts+' carts, '+m.untrackedPkgs+' packages. Preserved separately; excluded from these verified totals and rates because cart identities or timestamps are unavailable.';
+    if (m.archivedCarts || m.archivedPkgs) note+=' Totals include '+m.archivedCarts+' carts ('+m.archivedPkgs+' packages) from earlier days whose per-cart detail is archived, so the hour rows below add up to less than the totals.';
     if (m.shortCarts) note+=' Includes '+m.shortCarts+' cart(s) under 30 seconds, recorded with their actual time.';
     var noteEl=p.card.querySelector('[data-profile-note]');if(noteEl.textContent!==note){noteEl.textContent=note;changed=true;}
     if(changed)cbtScaleProfile();
