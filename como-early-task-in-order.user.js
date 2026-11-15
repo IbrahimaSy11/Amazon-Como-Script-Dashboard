@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.249
+// @version      23.9.252
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399M')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399M', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.249');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399P')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399P', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.252');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -1662,7 +1662,10 @@
     .cbt-stat-card { transition: background 0.15s; }
     .cbt-stat-card:hover { background: rgba(41,121,255,0.06); }
     #cbt-panel.dark .cbt-stat-card:hover { background: rgba(88,166,255,0.07) !important; }
-
+    /* v23.9.252: the #cbt-panel-copy placeholder CSS is REMOVED — the
+       copy bar sat at the bottom of task and Packages pages (it was
+       shown by detachMainPanel, which only ever runs off /dash). The
+       dashboard appears only on the main /dash page now. */
     /* live pulse next to the updated timestamp */
     #cbt-updated::before {
       content: ''; display: inline-block; width: 6px; height: 6px; border-radius: 50%;
@@ -2510,12 +2513,21 @@
       transition: background-color .15s, border-color .15s, box-shadow .15s;
     }
     #cbt-panel #cbt-controls > #cbt-scale-reset { min-width: 54px; font-variant-numeric: tabular-nums; }
-    /* v23.9.248: fixed width so the label can never move the header:
-       '▶ Run' / '▶ Running' / '⏹ Stop' / '⏹ Stopping…' all render
-       in the same 124px button (longest label ~117px measured at
-       13px bold incl. padding/border, so '▶ Running' fits with
-       room to spare). */
-    #cbt-panel #cbt-controls > #cbt-afa-btn { width: 124px !important; min-width: 124px !important; max-width: 124px !important; transform: none !important; }
+    /* v23.9.250: back to the ORIGINAL size — the 124px fixed width from
+       v248 made the button BIGGER than it was, and the user does not
+       want that ("dont increase the button width or length keep it the
+       same size"). The button is fixed at 78px (its original "▶ Run"
+       size) so Run and Running render at exactly the same outer width
+       and the header never moves. "Running" fits inside 78px because
+       the ▶ icon is dropped for that label (see the afaSetBtn call
+       sites) and the button's side padding is 5px: "Running" measures
+       ~62px at 13px bold + 10px padding + 2px border = ~74px, inside
+       78px (measured on DejaVu Sans Bold, the widest font; Segoe UI
+       on the user's Windows Chrome renders narrower, so there is more
+       headroom in practice). "▶ Run" (~44px text) and "⏹ Stop"
+       (~48px text) fit too; "⏹ Stopping…" is transient and may
+       ellipsize — the label span keeps its ellipsis safety net. */
+    #cbt-panel #cbt-controls > #cbt-afa-btn { width: 78px !important; min-width: 78px !important; max-width: 78px !important; transform: none !important; padding: 0 5px !important; }
     #cbt-panel #cbt-controls > button#cbt-afa-btn {
       appearance:none; font-family:inherit !important; cursor:pointer;
       pointer-events:auto !important; touch-action:manipulation; user-select:none;
@@ -3343,6 +3355,19 @@
          (Rows in the deliberately excluded Problem Solve / Partially
          Batched / Staged for Pickup sections are still cleared by
          refreshTimerHost before this runs — that exclusion is untouched.) */
+      /* v23.9.250: also CREATE the cell when the row has none yet. A
+         freshly rendered row whose Batch Target text has not arrived
+         got no cell at all, and nothing re-created it until a later
+         mutation or the 10s scan — up to 10s of missing number on
+         every live re-render. The cell is appended to the row now and
+         the next pass that finds the Batch Target re-anchors it after
+         that column; until then it shows the "—" placeholder. */
+      if (!existingCol) {
+        existingCol = document.createElement('div');
+        existingCol.className = 'col-lg-2 etf-col-cell';
+        existingCol.style.cssText = 'padding-left:5px;padding-right:5px;';
+        row.appendChild(existingCol);
+      }
       if (existingCol) {
         if (isHeader) {
           if (!existingCol.querySelector('.etf-col-title-wrap')) {
@@ -3363,7 +3388,7 @@
     }
     var btCol  = found.col;
     if (existingCol) {
-      if (btCol.nextElementSibling !== existingCol) {
+      if (btCol.nextElementSibling !== existingCol && btCol.parentNode) {
         btCol.parentNode.insertBefore(existingCol, btCol.nextSibling);
       }
       if (isHeader) {
@@ -3405,7 +3430,7 @@
         newCol.innerHTML = '<span class="etf-timeleft ok">\u2014</span>';
       }
     }
-    btCol.parentNode.insertBefore(newCol, btCol.nextSibling);
+    if (btCol.parentNode) btCol.parentNode.insertBefore(newCol, btCol.nextSibling);
     syncTimeLeftTypography(btCol, newCol, isHeader);
   }
 
@@ -3414,9 +3439,32 @@
   var EXCLUDED_SECTION_RE = /problem\s*solve|partially\s*batched|staged\s*for\s*pickup/i;
 
   var _cbtSectionMemo = null, _cbtSiblingMemo = null;
+  /* v23.9.250: only a short, heading-like element with no task rows of its
+     own can mark an excluded section. The old test ran the regex over the
+     FULL textContent of every previous sibling at every ancestor level,
+     so a big container — or a task card whose own status text mentions
+     a section name — matched and silently excluded every later row,
+     deleting its Time Left cell for good (and the 10s scan re-applied
+     the same wrong exclusion, so it never came back). A genuine COMO
+     section heading is a few words ("Problem Solve", "Partially Batched
+     (3)") and contains no job-cards; a job-card or a page container
+     can never be one. */
+  var CBT_SECTION_HEADING_MAX_LEN = 160;
   function cbtSectionTextMatches(el) {
-    if (!_cbtSectionMemo) return EXCLUDED_SECTION_RE.test(el.textContent || '');
-    if (!_cbtSectionMemo.has(el)) _cbtSectionMemo.set(el, EXCLUDED_SECTION_RE.test(el.textContent || ''));
+    var matched = false;
+    try {
+      var isRow = false;
+      try { isRow = !!(el.matches && el.matches('job-card, div.row')); } catch (eM) { isRow = false; }
+      var hasRows = false;
+      try { hasRows = !!(el.querySelector && el.querySelector('job-card, div.row')); } catch (eQ) { hasRows = false; }
+      if (!isRow && !hasRows) {
+        var text = (el.textContent || '').trim();
+        matched = text.length > 0 && text.length <= CBT_SECTION_HEADING_MAX_LEN &&
+          EXCLUDED_SECTION_RE.test(text);
+      }
+    } catch (e) { matched = false; }
+    if (!_cbtSectionMemo) return matched;
+    if (!_cbtSectionMemo.has(el)) _cbtSectionMemo.set(el, matched);
     return _cbtSectionMemo.get(el);
   }
   function cbtEarlierSectionMatches(node) {
@@ -3450,7 +3498,12 @@
     _cbtSectionMemo = new WeakMap();
     _cbtSiblingMemo = new WeakMap();
     try {
-      document.querySelectorAll('div.row.job-card-header, job-card').forEach(refreshTimerHost);
+      /* v23.9.250: one bad row must not kill the whole pass — each host
+         is guarded, so a throwing row is skipped and the rest still
+         get their Time Left cells. */
+      document.querySelectorAll('div.row.job-card-header, job-card').forEach(function (host) {
+        try { refreshTimerHost(host); } catch (eHost) {}
+      });
     } finally { _cbtSectionMemo = null; _cbtSiblingMemo = null; }
   }
 
@@ -3463,6 +3516,35 @@
       var nextClass = 'etf-timeleft ' + result.cls;
       if (el.textContent !== result.text) el.textContent = result.text;
       if (el.className !== nextClass) el.className = nextClass;
+    });
+    /* v23.9.250: the tick is also the re-assertion pass — a row that
+       lost its Time Left cell by ANY path gets it back within a
+       second, without waiting for the 10s scan or a page refresh.
+       Only rows missing a healthy cell pay for a re-injection; the
+       existence check is a shallow querySelector per row. */
+    try { cbtReassertMissingTimers(); } catch (eTickRe) {}
+  }
+
+  /* Re-inject Time Left into rows that have no cell, or whose cell has
+     no readable number. A cell showing "—" (genuinely no due time) or
+     a real countdown is healthy and is left alone. */
+  function cbtReassertMissingTimers() {
+    if (!isDashboardView()) return;
+    document.querySelectorAll('div.row.job-card-header, job-card').forEach(function (host) {
+      var row = null;
+      if (host.matches && host.matches('div.row.job-card-header')) row = host;
+      else {
+        try { row = host.querySelector('div.row'); } catch (eR) { row = null; }
+      }
+      if (!row) return;
+      var cell = null;
+      try { cell = row.querySelector(':scope > .etf-col-cell'); } catch (eC) { cell = null; }
+      if (cell) {
+        var span = null;
+        try { span = cell.querySelector('.etf-timeleft'); } catch (eS) { span = null; }
+        if (span && span.textContent) return;
+      }
+      try { refreshTimerHost(host); } catch (eH) {}
     });
   }
 
@@ -3515,13 +3597,25 @@
     _timerMutationHosts.clear();
     _cbtSectionMemo = new WeakMap();
     _cbtSiblingMemo = new WeakMap();
-    try { for (var i = 0; i < hosts.length; i++) refreshTimerHost(hosts[i]); }
+    try { for (var i = 0; i < hosts.length; i++) { try { refreshTimerHost(hosts[i]); } catch (eFlushHost) {} } }
     finally { _cbtSectionMemo = null; _cbtSiblingMemo = null; }
     try { afaScheduleStaleCycleAutoComplete(700); } catch(e2) {}
   }
 
   var timerWatcher = new MutationObserver(function(mutations) {
-    if (document.hidden || !isDashboardView()) return; /* v23.9.243: hidden-tab early return (see panelWatcher) */
+    /* v23.9.250: do NOT drop mutations that arrive while the page is
+       hidden. MutationObserver records are delivered once, as
+       microtasks, even while hidden — the v23.9.243 early return
+       discarded them, so task rows COMO re-rendered while the user
+       was on another Windows virtual desktop came back with no Time
+       Left cell and nothing re-queued them (that is exactly the "it
+       only disappears when I switch to another desktop" report).
+       Queueing is just Set.add — cheap while hidden; the real work
+       happens in the rAF flush, which only fires once visible again
+       (and the return handler flushes immediately — see
+       cbtOnReturnToDashboard). isDashboardView() still gates: rows
+       replaced on a non-dashboard route are dropped on purpose. */
+    if (!isDashboardView()) return;
 
     var foundRelevant = false;
     for (var i = 0; i < mutations.length; i++) {
@@ -8857,18 +8951,58 @@
     return true;
   }
 
-  /* True when the board is showing somewhere it shouldn't be. */
+  /* True when the board is showing somewhere it shouldn't be. A parked
+     panel (v23.9.251: moved to the hidden park host while off-dashboard)
+     is NOT showing anywhere, so it is not misplaced. */
   function boardIsMisplaced() {
-    return !isDashboardView() && !!document.getElementById('cbt-panel');
+    var p = document.getElementById('cbt-panel');
+    return !isDashboardView() && !!p && !p._cbtParked;
   }
 
+  /* v23.9.251: PARK host for the board. A display:none child of
+     document.body — Angular route changes rebuild the dashboard view
+     (<utilization> and its parents) but never touch direct body children,
+     so a parked panel survives a task/Packages visit intact. Created
+     lazily; if there is no body yet (very early startup) the caller
+     falls back to the old remove(). */
+  function cbtGetParkHost() {
+    try {
+      var host = document.getElementById('cbt-park-host');
+      if (host) return host;
+      host = document.createElement('div');
+      host.id = 'cbt-park-host';
+      host.style.display = 'none';
+      if (!document.body) return null;
+      document.body.appendChild(host);
+      return host;
+    } catch(eParkHost) { return null; }
+  }
   /* Detach the Batcher Timers board but KEEP the cached node, so its state
-     and event listeners survive and it re-mounts instantly on the dashboard. */
+     and event listeners survive and it re-mounts instantly on the dashboard.
+     v23.9.251: the node is PARKED, not removed. detachMainPanel() moves it
+     to the hidden park host instead of p.remove(), so going to a task or
+     Packages and back never makes the dashboard disappear and reload — on
+     return injectPanel() moves the SAME node back to its mount point with
+     its rendered content already in it. The width anchor and resize
+     observers are stopped while parked (as before) and the brand observer
+     is disconnected; injectPanel() re-installs all three on unpark. */
   function detachMainPanel() {
     var p = document.getElementById('cbt-panel');
-    if (p && p._cbtStopResize) p._cbtStopResize();
-    if (p && p._cbtStopWidthAnchor) { try { p._cbtStopWidthAnchor(); } catch(eWaD) {} p._cbtStopWidthAnchor = null; }
-    if (p) { p.style.width = ''; p.remove(); }
+    if (!p) return;
+    if (p._cbtParked) return; /* already parked */
+    if (p._cbtStopResize) p._cbtStopResize();
+    if (p._cbtStopWidthAnchor) { try { p._cbtStopWidthAnchor(); } catch(eWaD) {} p._cbtStopWidthAnchor = null; }
+    try { if (_cbtBrandObserver) { _cbtBrandObserver.disconnect(); } _cbtBrandObserver = null; } catch(eBrandPark) {}
+    p.style.width = '';
+    var host = cbtGetParkHost();
+    if (!host) { p.remove(); return; } /* no body yet: fall back to the old remove */
+    p._cbtParked = true;
+    p.style.display = 'none';
+    try { host.appendChild(p); } catch(ePark) { p._cbtParked = false; p.remove(); }
+    /* v23.9.252: nothing is left on screen off /dash any more. The
+       copy is REMOVED (see E4): the park + synchronous unpark is what
+       keeps the dashboard from disappearing on return, not a
+       placeholder bar. */
   }
 
   /* The board has exactly ONE valid home: immediately before the
@@ -8878,6 +9012,17 @@
      when <utilization> was missing — that is what caused the board to
      appear on cart detail pages. If the real anchor isn't present we now
      simply don't mount: better absent than in the wrong place. */
+  /* v23.9.252: the COPY is REMOVED entirely — cbtCopyStatText /
+     cbtShowPanelCopy / cbtHidePanelCopy and the #cbt-panel-copy CSS
+     are gone. It was shown by detachMainPanel() (which only ever
+     runs off /dash) and by the hidden branch of
+     cbtOnReturnToDashboard() (any page), so the bar sat at the
+     bottom of task and Packages pages — exactly what the user asked
+     to remove ("i only want the dashboard to only appear in the
+     main page"). On /dash itself the copy covered nothing: the
+     panel is never detached while on /dash, a browser-tab switch
+     leaves it mounted (v235), and the v251 synchronous unpark puts
+     it back before the next paint on return. */
   function findMountPoint() {
     if (!isDashboardView()) return null;
     var el = document.querySelector('utilization.dashboard-utilization') ||
@@ -8949,7 +9094,13 @@
     if (!isDashboardView()) { detachMainPanel(); return; }
 
     var existing = document.getElementById('cbt-panel');
-    if (existing && existing.isConnected) return;
+    /* v23.9.251: a parked panel is connected (to the hidden park host) but
+       NOT mounted — fall through and unpark it below instead of returning
+       early. The flag/display are cleared only once the mount point
+       exists (see the style reset below), so a failed mount leaves the
+       panel parked and the retry chain re-runs injectPanel(). */
+    var wasParked = !!(existing && existing._cbtParked);
+    if (existing && existing.isConnected && !wasParked) return;
 
     if (!_panel2Ref) {
       _panel2Ref = buildPanel();
@@ -8964,6 +9115,12 @@
     _panel2Ref.style.right = '';
     _panel2Ref.style.width = '';
     _panel2Ref.style.zIndex = '';
+    /* v23.9.251: unpark — the mount point exists, so this insert is going
+       ahead. Clear the parked flag and the parking display:none here (not
+       at the top of the function) so a failed mount cannot strand the
+       panel unparked-but-not-mounted. */
+    _panel2Ref.style.display = '';
+    try { _panel2Ref._cbtParked = false; } catch(eParkFlag) {}
 
     /* v23.9.243: go through the collapse hook first so the collapse
        closure (isCollapsed, read by the ▲/▼ handler) stays in sync with
@@ -9015,7 +9172,15 @@
     /* Only render the tab the user can actually see. Hidden tabs keep their
        data in storage/cache and render normally the moment the user clicks
        them. This removes a large burst of unnecessary DOM creation at startup. */
-    try { renderActiveSearchTab(); } catch(ex) { try { renderLive(); } catch(ex2) {} }
+    /* v23.9.251: on an unpark the tab content is already rendered in
+       the parked node — re-rendering it is the "loading" the user sees
+       on return. While collapsed the body is hidden anyway, so skip the
+       re-render and let the stats repaint below (persisted stats + a
+       fresh fetch if stale) carry the visible strip. An expanded unpark
+       still re-renders, so the visible tab is fresh. */
+    if (!(wasParked && cbtIsPanelCollapsed())) {
+      try { renderActiveSearchTab(); } catch(ex) { try { renderLive(); } catch(ex2) {} }
+    }
 
     /* If the backend answered during the short mount window, make sure the
        freshly mounted Live table receives that cached data immediately. */
@@ -9046,7 +9211,9 @@
     if (!isDashboardView()) { detachMainPanel(); _mountFails = 0; return; }
 
     var p = document.getElementById('cbt-panel');
-    if (p && p.isConnected) { _mountFails = 0; return; }
+    /* v23.9.251: a parked panel is connected but NOT mounted — fall through
+       to injectPanel() so it is unparked, instead of returning early. */
+    if (p && p.isConnected && !p._cbtParked) { _mountFails = 0; return; }
 
     injectPanel();
 
@@ -10676,14 +10843,24 @@
     if (!isDashboardView()) { detachMainPanel(); return; }  /* Packages/Orders/etc */
 
     var mp = document.getElementById('cbt-panel');
-    if (!mp || !mp.isConnected) injectPanel();
+    if (!mp || !mp.isConnected || mp._cbtParked) injectPanel();
   }, 50);
 
   var _cbtQuickMountPending = false;
   function cbtQuickDashboardMount() {
     if (document.hidden || !isDashboardView()) return;
     var panel = document.getElementById('cbt-panel');
-    if (panel && panel.isConnected) return;
+    if (panel && panel.isConnected && !panel._cbtParked) return;
+    /* v23.9.251: UNPARK SYNCHRONOUSLY. Moving the parked node back is just
+       an insertBefore — it is safe inside observer delivery and history
+       callbacks, and it puts the panel in the DOM in the same
+       mutation-delivery microtask that inserted the anchor, BEFORE the
+       next paint. Deferring it (setTimeout 0 / the 100ms retry chain)
+       left a frame where /dash was shown without the panel — the flash
+       the user sees when he comes back from a task, Packages, or another
+       browser tab. A FRESH mount (no parked node) still yields via
+       setTimeout, so framework cleanup can finish first. */
+    if (panel && panel._cbtParked && findMountPoint()) { try { injectPanel(); } catch(eSyncUnpark) {} return; }
     if (_cbtQuickMountPending || !findMountPoint()) return;
     _cbtQuickMountPending = true;
     // Yield outside observer delivery/history callbacks so framework cleanup
@@ -13478,7 +13655,7 @@
     _afaOverlay = null;
     var runButton = document.getElementById('cbt-afa-btn');
     if (runButton) runButton.setAttribute('aria-expanded','false');
-    if (_afaRunning) afaSetBtn('▶ Running', true);
+    if (_afaRunning) afaSetBtn('Running', true);
     else { _afaRunState=null; afaSetBtn('▶ Run', false); }
   }
   function afaShell(title, bodyHtml, footHtml) {
@@ -13952,7 +14129,7 @@
     var results = [], i = 0, finished = false;
     _afaRunState={mode:runMode,done:0,total:list.length,ref:'',results:results,finished:false};
     if(showProgress){afaProgressView(runMode);cbtReassertCollapsedIfWas(_runStartWasCollapsed);}
-    else afaSetBtn('▶ Running',true);
+    else afaSetBtn('Running',true);
 
     function finish() {
       if (finished) return;
@@ -15041,8 +15218,19 @@
      cbtNativeSessionRecent auth guard, which is not bypassed. */
   var _cbtReturnHandlerRegistered = false;
   function cbtOnReturnToDashboard() {
+    /* v23.9.252: the copy is REMOVED — nothing is shown while the tab is
+       hidden any more. The panel stays mounted on a browser-tab switch
+       (v235), and the synchronous unpark covers the return from a
+       task/Packages, so there is nothing left to cover. */
     if (document.hidden) return;
     try { panelHealthCheck(); taskPanelHealthCheck(); requestLiveRender(); pollActiveTasks(); } catch(e9p) {}
+    /* v23.9.250: heal Time Left synchronously on return to the tab.
+       Mutations that arrived while hidden used to be discarded by
+       timerWatcher, so rows COMO re-rendered on another virtual
+       desktop came back without a number until the next 10s scan.
+       This runs before the first paint of the newly visible page, so
+       the number is back the moment the user looks at the dashboard. */
+    try { if (isDashboardView()) { injectAllTimers(); tickTimers(); } } catch(e9t) {}
     try { p1hApplyCachedToNode(document.body); p1hScheduleVisibleScan(); } catch(e9h) {}
   }
   function cbtRegisterReturnHandler() {
@@ -15128,7 +15316,9 @@
         (function retryDashboardMount(){
           if (lastHandledRoute !== returnRoute || !isDashboardView()) return;
           var currentPanel = document.getElementById('cbt-panel');
-          if (currentPanel && currentPanel.isConnected) return;
+          /* v23.9.251: a parked panel is connected but NOT mounted — keep
+             retrying until it is unparked, instead of returning early. */
+          if (currentPanel && currentPanel.isConnected && !currentPanel._cbtParked) return;
           cbtQuickDashboardMount();
           if (Date.now() - returnStarted < 10000) setTimeout(retryDashboardMount, 100);
         })();
@@ -15214,7 +15404,7 @@
          observers/2s health check are enough. Avoid duplicate 500ms scans. */
       if (isDashboardView()) {
         var mp = document.getElementById('cbt-panel');
-        if (mp && mp.isConnected) return;
+        if (mp && mp.isConnected && !mp._cbtParked) return;
       } else if (shouldShowSearchPanel()) {
         var tp = document.getElementById('cbt-tp');
         if (tp && tp.isConnected) return;
@@ -15244,15 +15434,20 @@
     try { cbtStartTodayBoundaryClock(); } catch(e10) {}
 
     if (isComoSite()) {
+      /* v23.9.250: the 1s tick and the 10s safety scan are registered
+         FIRST, each in its own try/catch, before the initial
+         injectAllTimers() runs. In v249 all of this sat inside one
+         try/catch after injectAllTimers() — if that first pass ever
+         threw, the tick and the scan were never created at all and
+         Time Left froze/disappeared for the whole session. */
+      /* Visible Time Left values still tick every second. The expensive
+         whole-page safety scan is only every 10s; mutations are handled
+         immediately and locally by timerWatcher above. The tick is NOT
+         gated on collapse (v23.9.250): Time Left lives in COMO's own
+         task rows, not in the panel, and the v23.9.227 gate froze every
+         number on the user's normal collapsed dashboard. */
+      try { setInterval(function(){ try { tickTimers(); } catch(e10) {} }, 1000); } catch (eTickReg) {}
       try {
-        timerWatcher.observe(document.documentElement, { childList: true, subtree: true });
-        injectAllTimers();
-        afaScheduleStaleCycleAutoComplete(1400);
-
-        /* Visible Time Left values still tick every second. The expensive
-           whole-page safety scan is only every 5s; mutations are handled
-           immediately and locally by timerWatcher above. */
-        setInterval(function(){ if (cbtIsPanelCollapsed()) return; /* v23.9.227: Time Left ticking is panel work; off while collapsed */ try { tickTimers(); } catch(e10) {} }, 1000);
         setInterval(function(){
           if (document.hidden || !isDashboardView()) return;
           /* v23.9.249: injectAllTimers() runs even while the panel is
@@ -15268,7 +15463,14 @@
           if (cbtIsPanelCollapsed()) return; /* v23.9.227: stale-cycle work stays off while collapsed */
           try { afaScheduleStaleCycleAutoComplete(700); } catch(e11b) {}
         }, 10000);  /* v23.9.223: was 5000 — timerWatcher + 1s tick cover changes in between */
-      } catch(e12) {}
+      } catch (eScanReg) {}
+      /* v23.9.250: timerWatcher also watches characterData — Angular
+         updates Batch Target text in place (text-node edits), and
+         those never queued a re-injection before. panelWatcher keeps
+         childList-only (see COMO_lag_fixes_tests). */
+      try { timerWatcher.observe(document.documentElement, { childList: true, subtree: true, characterData: true }); } catch (eObs) {}
+      try { injectAllTimers(); } catch (eInit) {}
+      try { afaScheduleStaleCycleAutoComplete(1400); } catch (eAfa) {}
 
       /* Authoritative Live data + stats keep the same refresh cadence. */
       pollActiveTasks();
