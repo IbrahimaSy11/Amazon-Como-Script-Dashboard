@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.248
+// @version      23.9.249
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399L')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399L', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.248');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399M')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399M', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.249');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -653,7 +653,8 @@
        BATCHER TIMER PANEL — main board
     ══════════════════════════════════════ */
     #cbt-panel {
-      width: 100%; background: var(--cb-surface);
+      width: 100%; box-sizing: border-box; max-width: 100%; min-width: 0;
+      background: var(--cb-surface);
       border: 1px solid var(--cb-border);
       border-radius: var(--cb-radius);
       box-shadow: 0 4px 20px rgba(13,27,42,0.10), 0 1px 4px rgba(13,27,42,0.06);
@@ -3330,7 +3331,36 @@
     }
     var isHeader = row.classList.contains('job-card-header');
     var found = findBatchTargetCol(row);
-    if (!found) { if (existingCol) existingCol.remove(); return; }
+    if (!found) {
+      /* v23.9.249: NEVER delete the Time Left cell just because the Batch
+         Target is momentarily unreadable (row still rendering, data not
+         arrived yet). Deleting it made the disappearance sticky: the cell
+         only came back if a later mutation re-queued the host, and the
+         10s safety scan was collapsed-gated, so on the user's normal
+         collapsed dashboard it stayed gone until the next route change.
+         Keep the cell and show the placeholder instead; the next scan
+         fills in the real countdown when the Batch Target text arrives.
+         (Rows in the deliberately excluded Problem Solve / Partially
+         Batched / Staged for Pickup sections are still cleared by
+         refreshTimerHost before this runs — that exclusion is untouched.) */
+      if (existingCol) {
+        if (isHeader) {
+          if (!existingCol.querySelector('.etf-col-title-wrap')) {
+            existingCol.innerHTML = '<span class="etf-col-header"><span class="etf-col-title-wrap"><span class="etf-col-icon" aria-hidden="true">\u23F1</span>Time Left</span></span>';
+          }
+        } else {
+          var phEl = existingCol.querySelector('.etf-timeleft');
+          if (!phEl) {
+            phEl = document.createElement('span');
+            existingCol.replaceChildren(phEl);
+          }
+          if (phEl.textContent !== '—') phEl.textContent = '—';
+          if (phEl.className !== 'etf-timeleft ok') phEl.className = 'etf-timeleft ok';
+          phEl.removeAttribute('data-target');
+        }
+      }
+      return;
+    }
     var btCol  = found.col;
     if (existingCol) {
       if (btCol.nextElementSibling !== existingCol) {
@@ -8837,7 +8867,8 @@
   function detachMainPanel() {
     var p = document.getElementById('cbt-panel');
     if (p && p._cbtStopResize) p._cbtStopResize();
-    if (p) p.remove();
+    if (p && p._cbtStopWidthAnchor) { try { p._cbtStopWidthAnchor(); } catch(eWaD) {} p._cbtStopWidthAnchor = null; }
+    if (p) { p.style.width = ''; p.remove(); }
   }
 
   /* The board has exactly ONE valid home: immediately before the
@@ -8853,6 +8884,63 @@
              document.querySelector('utilization');
     if (el && el.parentNode) return { el: el, mode: 'before' };
     return null;
+  }
+
+  /* v23.9.249: pin the panel width to its mount container, measured
+     AFTER the layout settles and kept in sync afterwards — so the width
+     is the same on first load and on every return from a task/Packages.
+     The panel is `width: 100%` of its container, but it is mounted on the
+     first mutation after a route change, while Angular is still rendering
+     the dashboard and the page is still short: on Windows Chrome the
+     classic scrollbar takes ~15px, so the right-hand column is a few px
+     wider before COMO's data loads and the scrollbar appears, and nothing
+     ever re-pinned the width afterwards. This helper fixes that:
+     one requestAnimationFrame (one-shot settle, no polling) measures the
+     mount container's content width — clientWidth minus horizontal
+     padding, exactly what CSS `width: 100%` resolves to — and sets the
+     panel's inline width to it; a ResizeObserver on the container
+     re-applies it whenever the container resizes (layout settling,
+     scrollbar appearing/disappearing, window resize), so a mount-time
+     transient width is corrected as soon as the layout settles. The
+     disconnect is stored as panel._cbtStopWidthAnchor (same pattern as
+     _cbtStopResize) and is called in detachMainPanel() and cleared on
+     every mount, so no observer outlives its panel. If the measured
+     width is 0 the inline width is left alone and CSS width: 100%
+     stands until the observer fires with a real size; without
+     ResizeObserver the CSS width stands (no behaviour change). */
+  function cbtAnchorPanelWidth(panel, parent) {
+    try {
+      panel = panel || document.getElementById('cbt-panel');
+      if (!panel) return;
+      if (typeof panel._cbtStopWidthAnchor === 'function') {
+        try { panel._cbtStopWidthAnchor(); } catch(eWa0) {}
+        panel._cbtStopWidthAnchor = null;
+      }
+      parent = parent || panel.parentNode;
+      if (!parent) return;
+      var sync = function() {
+        try {
+          if (!panel.isConnected) return;
+          var cs = null;
+          try { cs = getComputedStyle(parent); } catch(eCs) {}
+          var w = parent.clientWidth || 0;
+          if (cs) w -= (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+          if (w > 0 && panel.style.width !== (Math.round(w) + 'px')) panel.style.width = Math.round(w) + 'px';
+        } catch(eSync) {}
+      };
+      if (typeof requestAnimationFrame === 'function') {
+        try { requestAnimationFrame(sync); } catch(eRaf) { setTimeout(sync, 0); }
+      } else {
+        setTimeout(sync, 0);
+      }
+      if (typeof ResizeObserver === 'function') {
+        try {
+          var ro = new ResizeObserver(function() { sync(); });
+          ro.observe(parent);
+          panel._cbtStopWidthAnchor = function() { try { ro.disconnect(); } catch(eRo) {} };
+        } catch(eObs) {}
+      }
+    } catch(eAnchor) {}
   }
 
   function injectPanel() {
@@ -8918,6 +9006,7 @@
     }
 
     mount.el.parentNode.insertBefore(_panel2Ref, mount.el);
+    try { cbtAnchorPanelWidth(_panel2Ref, mount.el.parentNode); } catch(eAnchorMount) {}
     try { cbtEnsureBranding(); cbtStartBrandObserver(); } catch(eBrandMount) {}
 
     _mountFails = 0;              /* mounted successfully */
@@ -15165,8 +15254,19 @@
            immediately and locally by timerWatcher above. */
         setInterval(function(){ if (cbtIsPanelCollapsed()) return; /* v23.9.227: Time Left ticking is panel work; off while collapsed */ try { tickTimers(); } catch(e10) {} }, 1000);
         setInterval(function(){
-          if (document.hidden || !isDashboardView() || cbtIsPanelCollapsed()) return; /* v23.9.227 */
-          try { injectAllTimers(); afaScheduleStaleCycleAutoComplete(700); } catch(e11) {}
+          if (document.hidden || !isDashboardView()) return;
+          /* v23.9.249: injectAllTimers() runs even while the panel is
+             collapsed — Time Left lives in COMO's own task rows, not in
+             the panel, so the rows are visible either way, and this 10s
+             pass is the heal that re-creates a Time Left cell whose
+             Batch Target data arrived late. Gating it on collapse (the
+             v23.9.227 rule) left a cell deleted by a racing flush gone
+             for good on the user's normal collapsed dashboard. The
+             stale-cycle auto-complete scheduling keeps the collapsed
+             guard — that one IS panel/run work. */
+          try { injectAllTimers(); } catch(e11) {}
+          if (cbtIsPanelCollapsed()) return; /* v23.9.227: stale-cycle work stays off while collapsed */
+          try { afaScheduleStaleCycleAutoComplete(700); } catch(e11b) {}
         }, 10000);  /* v23.9.223: was 5000 — timerWatcher + 1s tick cover changes in between */
       } catch(e12) {}
 
