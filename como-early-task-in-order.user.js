@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.247
+// @version      23.9.248
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -39,9 +39,9 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399K')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399K', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.247');
+  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399L')) return;
+  document.documentElement.setAttribute('data-cbt-runtime-v2399L', '1');
+  document.documentElement.setAttribute('data-cbt-version', '23.9.248');
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -2509,7 +2509,12 @@
       transition: background-color .15s, border-color .15s, box-shadow .15s;
     }
     #cbt-panel #cbt-controls > #cbt-scale-reset { min-width: 54px; font-variant-numeric: tabular-nums; }
-    #cbt-panel #cbt-controls > #cbt-afa-btn { min-width: 78px; transform: none !important; }
+    /* v23.9.248: fixed width so the label can never move the header:
+       '▶ Run' / '▶ Running' / '⏹ Stop' / '⏹ Stopping…' all render
+       in the same 124px button (longest label ~117px measured at
+       13px bold incl. padding/border, so '▶ Running' fits with
+       room to spare). */
+    #cbt-panel #cbt-controls > #cbt-afa-btn { width: 124px !important; min-width: 124px !important; max-width: 124px !important; transform: none !important; }
     #cbt-panel #cbt-controls > button#cbt-afa-btn {
       appearance:none; font-family:inherit !important; cursor:pointer;
       pointer-events:auto !important; touch-action:manipulation; user-select:none;
@@ -2519,7 +2524,7 @@
     #cbt-panel #cbt-controls > button#cbt-afa-btn > .cbt-afa-lbl { pointer-events:none; user-select:none; }
     #cbt-panel #cbt-controls #cbt-afa-btn > .cbt-afa-lbl,
     #cbt-panel.dark #cbt-controls #cbt-afa-btn > .cbt-afa-lbl {
-      display: inline; border: 0 !important; padding: 0 !important; margin: 0;
+      display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0 !important; padding: 0 !important; margin: 0;
       background: transparent !important; box-shadow: none !important; border-radius: 0 !important;
       font-size: inherit; line-height: inherit; color: inherit !important; cursor: inherit;
     }
