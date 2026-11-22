@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         COMO - Early Task In Order With Timer & Batcher Dashboard
 // @namespace    https://github.com/uny2-ops
-// @version      23.9.253
+// @version      23.9.256
 // @description  Batcher dashboard with local reports, Run actions, task order, Time Left, and QR — the dashboard itself runs on COMO only; the highlight-text QR generator works on any site
 // @author       Ibrahsyw
 // @match        https://como-operations-dashboard-iad.iad.proxy.amazon.com/*
@@ -11,6 +11,7 @@
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
+// @grant        GM_deleteValue
 // @grant        unsafeWindow
 // @connect      drive.corp.amazon.com
 // ==/UserScript==
@@ -39,9 +40,17 @@
   if (/\/(?:login|signin|sso|oauth|saml|auth)(?:[/.]|$)/i.test(location.pathname)) return;
 
   /* A second installation must not stack network hooks and observers. */
-  if (document.documentElement.hasAttribute('data-cbt-runtime-v2399Q')) return;
-  document.documentElement.setAttribute('data-cbt-runtime-v2399Q', '1');
-  document.documentElement.setAttribute('data-cbt-version', '23.9.253');
+  /* v23.9.256 (R12): also check/set a version-independent
+     data-cbt-runtime attribute, so a cross-version double install cannot
+     stack network hooks and observers; the documentElement guard keeps
+     the check safe if the document has no root element yet. */
+  if (document.documentElement && (document.documentElement.hasAttribute('data-cbt-runtime') ||
+      document.documentElement.hasAttribute('data-cbt-runtime-v2399T'))) return;
+  if (document.documentElement) {
+    document.documentElement.setAttribute('data-cbt-runtime', '1');
+    document.documentElement.setAttribute('data-cbt-runtime-v2399T', '1');
+    document.documentElement.setAttribute('data-cbt-version', '23.9.256');
+  }
 
   /* v23.9.239: qrcode-generator (MIT, Kazuhiko Arase) moved up from
      the QR section below. It is self-contained, so moving it changes
@@ -131,9 +140,19 @@
   var _qaOverlay = null;
   var _qaLastText = '';
   var _qaClosedText = '', _qaClosedAt = 0; /* v23.9.243: see _qrClosedText */
+  var _qaClosedPressSeq = 0; /* v23.9.255: _cbtQrPressSeq at the last close */
   var _qaSelectionRoot = null; /* v23.9.243: see _qrSelectionRoot */
   var _qaOutsideHandler = null;
-  var _qaEscHandler = null;
+  var _qaBlurHandler = null; /* v23.9.256 (R8): window blur handler, removed in qaTeardown */
+  /* v23.9.254: dismissal is outside-click only (no auto-close, no
+     Escape). An outside mousedown only ARMS the dismissal — see
+     qaOutsideIsEcho / the armed-press watch in qaOpen. */
+  var _qaOutsidePress = null; /* {x, y, at} once an outside press arms */
+  var _qaOutsideMoveHandler = null, _qaOutsideUpHandler = null,
+      _qaOutsideCancelHandler = null;
+  var _qaOpenedAt = 0; /* Date.now() of the last open (echo guard) */
+  var _qaRenderRAF = 0, _qaLastRenderedText = null; /* v23.9.256 (L11): rAF throttle + last rendered text */
+  var _qaOpenedPointerType = 'mouse'; /* pointerType that opened it */
   var _qaPos = 'bottom-right'; /* in-memory only; nothing is persisted */
   var QA_POSITIONS = ['bottom-left', 'bottom-center', 'bottom-right'];
 
@@ -245,9 +264,12 @@
     if (!host) return;
 
     text = String(text || '');
+    /* v23.9.256 (L11): same text as the last render — skip the re-encode. */
+    if (text === _qaLastRenderedText) return;
     if (!text.trim()) {
       host.innerHTML = '';
       if (err) err.style.display = 'none';
+      _qaLastRenderedText = text;
       return;
     }
 
@@ -280,13 +302,31 @@
         err.textContent = '';
         err.style.display = 'none';
       }
+      _qaLastRenderedText = text;
     } catch (e) {
       host.innerHTML = '';
       if (err) {
         err.textContent = 'Could not generate QR code';
         err.style.display = 'block';
       }
+      _qaLastRenderedText = null;
     }
+  }
+
+  /* v23.9.256 (L11): mirror the COMO rAF throttle (qrScheduleRender) —
+     one render per frame while typing, not one QR encode per keystroke. */
+  function qaScheduleRender(text) {
+    if (_qaRenderRAF) {
+      try { cancelAnimationFrame(_qaRenderRAF); } catch(e) {}
+    }
+    var raf = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame
+      : function(cb){ return setTimeout(cb, 16); };
+
+    _qaRenderRAF = raf(function(){
+      _qaRenderRAF = 0;
+      qaRender(text);
+    });
   }
 
   function qaRefreshArrowState() {
@@ -315,14 +355,52 @@
     qaApplyPosition();
   }
 
+  /* v23.9.254: remove the armed-press watch (move/up/cancel listeners)
+     and forget the press. Idempotent — safe to call from qaTeardown,
+     from the mouseup handler itself, and from a press inside the card. */
+  function qaClearOutsideWatch() {
+    if (_qaOutsideMoveHandler) {
+      try { document.removeEventListener('mousemove', _qaOutsideMoveHandler, true); } catch(e) {}
+      _qaOutsideMoveHandler = null;
+    }
+    if (_qaOutsideUpHandler) {
+      try { document.removeEventListener('mouseup', _qaOutsideUpHandler, true); } catch(e) {}
+      _qaOutsideUpHandler = null;
+    }
+    if (_qaOutsideCancelHandler) {
+      try { document.removeEventListener('pointercancel', _qaOutsideCancelHandler, true); } catch(e) {}
+      _qaOutsideCancelHandler = null;
+    }
+    _qaOutsidePress = null;
+  }
+
+  /* v23.9.254: is this mousedown the compatibility echo of the touch/pen
+     gesture that just opened the popup? Chrome dispatches a synthetic
+     mousedown after the pointerup of a touch drag-select (and pen
+     drag-selects dispatch one too, with no firesTouch signal to tell it
+     apart — hence the timing-only pen branch). A real mouse press is
+     never an echo; a real touch/pen tap more than 500 ms after the open
+     still dismisses. */
+  function qaOutsideIsEcho(e) {
+    if (!_qaOverlay || !_qaOpenedAt) return false;
+    if (Date.now() - _qaOpenedAt >= QR_OPEN_ECHO_MS) return false;
+    if (_qaOpenedPointerType === 'touch') {
+      try { return !!(e && e.sourceCapabilities && e.sourceCapabilities.firesTouch); } catch(e2) { return false; }
+    }
+    if (_qaOpenedPointerType === 'pen') return true;
+    return false;
+  }
+
   function qaTeardown() {
+    qaClearOutsideWatch();
+    /* v23.9.256 (R8): the blur listener is registered with the outside
+       handler in qaOpen and removed here, so it cannot accumulate. */
+    if (_qaBlurHandler) { try { window.removeEventListener('blur', _qaBlurHandler, true); } catch(eB) {} _qaBlurHandler = null; }
+    if (_qaRenderRAF) { try { cancelAnimationFrame(_qaRenderRAF); } catch(eR) {} _qaRenderRAF = 0; }
+    _qaLastRenderedText = null;
     if (_qaOutsideHandler) {
       try { document.removeEventListener('mousedown', _qaOutsideHandler, true); } catch (e1) {}
       _qaOutsideHandler = null;
-    }
-    if (_qaEscHandler) {
-      try { document.removeEventListener('keydown', _qaEscHandler, true); } catch (e2) {}
-      _qaEscHandler = null;
     }
     if (_qaOverlay && _qaOverlay.parentNode) _qaOverlay.parentNode.removeChild(_qaOverlay);
     _qaOverlay = null;
@@ -333,6 +411,7 @@
     var _closedText = _qaLastText;
     qaTeardown();
     _qaClosedText = _closedText; _qaClosedAt = Date.now();
+    _qaClosedPressSeq = _cbtQrPressSeq;
     /* The page text stays highlighted behind the popup. Left alone, the
        mouseup that follows the close would read that same selection and
        reopen the popup on its own. Dropping the selection means closed
@@ -355,6 +434,10 @@
   function qaOpen(text) {
     text = String(text || '').trim();
     if (!text) return;
+    /* v23.9.254: a fresh open (or re-highlight of the same text) starts
+       a new echo window — the opening gesture's own compatibility
+       mousedown must not dismiss what it just opened. */
+    _qaOpenedAt = Date.now();
 
     /* Same text + already open = no DOM rebuild. But the user may have
        edited the input since opening — reset the field to the selected
@@ -393,6 +476,10 @@
 
     var card = _qaOverlay.querySelector('#qa-qr-card');
     var input = _qaOverlay.querySelector('#qa-qr-input');
+    /* v23.9.256 (R11): a null input used to be dereferenced before the
+       outside-dismiss handler was registered, leaving an orphaned popup
+       with no dismiss path. Tear down instead. */
+    if (!input) { qaTeardown(); return; }
     input.value = text;
 
     var leftBtn = _qaOverlay.querySelector('#qa-qr-left');
@@ -414,24 +501,55 @@
     }
     /* The text field is editable and the QR redraws live as you type. */
     input.addEventListener('input', function () {
-      qaRender(input.value);
+      qaScheduleRender(input.value);
     });
 
-    /* Clicking outside the card closes it. The listener exists ONLY while
-       the popup is open and only does one contains() check. The closing
-       mousedown runs before the mouseup, and qaClose() drops the page
-       selection, so that same mouseup cannot reopen the popup — while a
-       fresh drag-select after the mousedown still opens with the new text. */
+    /* v23.9.254: dismissal is by outside CLICK only — no auto-close, no
+       Escape. A mousedown outside only ARMS the dismissal; the popup
+       closes on the mouseup, and only if the press did not move. A press
+       that moves more than QR_OUTSIDE_DRAG_PX is a (re)highlight drag,
+       not a click: the dismissal is cancelled and the drag's mouseup
+       reopens/refreshes through the normal selection queue — so a fast
+       highlight that is immediately re-dragged to fix it can no longer
+       make the popup vanish. The closing mouseup is the same event the
+       queue reads, and qaClose() drops the page selection, so it cannot
+       reopen the popup. Clicks inside the card never arm anything. */
     _qaOutsideHandler = function (e) {
-      if (!_qaOverlay || !card || card.contains(e.target)) return;
-      qaClose();
+      if (!_qaOverlay || !card || card.contains(e.target)) { qaClearOutsideWatch(); return; }
+      if (qaOutsideIsEcho(e)) return;
+      if (_qaOutsidePress) qaClearOutsideWatch();
+      var _qx = (e && isFinite(e.clientX)) ? e.clientX : 0;
+      var _qy = (e && isFinite(e.clientY)) ? e.clientY : 0;
+      _qaOutsidePress = { x: _qx, y: _qy, at: Date.now() };
+      _qaOutsideMoveHandler = function (ev) {
+        if (!_qaOutsidePress) return;
+        var _mx = (ev && isFinite(ev.clientX)) ? ev.clientX : _qx;
+        var _my = (ev && isFinite(ev.clientY)) ? ev.clientY : _qy;
+        if (Math.abs(_mx - _qaOutsidePress.x) > QR_OUTSIDE_DRAG_PX ||
+            Math.abs(_my - _qaOutsidePress.y) > QR_OUTSIDE_DRAG_PX) {
+          qaClearOutsideWatch();
+        }
+      };
+      _qaOutsideUpHandler = function () {
+        var _press = _qaOutsidePress;
+        qaClearOutsideWatch();
+        if (!_press || !_qaOverlay) return;
+        if (Date.now() - _press.at > 10000) return;
+        qaClose();
+      };
+      _qaOutsideCancelHandler = function () { qaClearOutsideWatch(); };
+      document.addEventListener('mousemove', _qaOutsideMoveHandler, true);
+      document.addEventListener('mouseup', _qaOutsideUpHandler, true);
+      document.addEventListener('pointercancel', _qaOutsideCancelHandler, true);
     };
     document.addEventListener('mousedown', _qaOutsideHandler, true);
 
-    _qaEscHandler = function (e) {
-      if (e && e.key === 'Escape') qaClose();
-    };
-    document.addEventListener('keydown', _qaEscHandler, true);
+    /* v23.9.256 (R8): a window blur while a press is armed means its
+       mouseup may never arrive (alt-tab / window switch) — clear the
+       armed watch instead of leaving it armed. The 10 s stale rule for
+       the press itself is unchanged. */
+    _qaBlurHandler = function(){ if (_qaOutsidePress) qaClearOutsideWatch(); };
+    try { window.addEventListener('blur', _qaBlurHandler, true); } catch(eBlurReg) { _qaBlurHandler = null; } /* v23.9.256 (R8): registration is guarded like every other listener here — a host without window.addEventListener must not break the popup */
 
     qaRender(text);
   }
@@ -459,11 +577,17 @@
   function qaOpenCurrentSelection(event) {
     var selected = qaSelectionText(event);
     if (!selected) return;
-    /* v23.9.243: the popup was just closed on this same text — the mouseup
-       that follows the close must not reopen it. A genuinely NEW selection
-       (different text, or after 1.5 s) still opens. */
-    if (selected === _qaClosedText && Date.now() - _qaClosedAt < 1500) return;
+    /* v23.9.255: the popup was just closed on this same text — but only
+       the closing click's own trailing read must not reopen it. A fresh
+       press after the close (a new double-click, a new drag) is a
+       deliberate re-highlight, so it opens again: the suppression only
+       applies while no press has happened since the close
+       (_qaClosedPressSeq === _cbtQrPressSeq). Different text, or a
+       re-highlight after 1.5 s, still opens as before. */
+    if (selected === _qaClosedText && Date.now() - _qaClosedAt < 1500 &&
+        _qaClosedPressSeq === _cbtQrPressSeq) return;
     _qaSelectionRoot = cbtShadowSelectionRoot(event);
+    _qaOpenedPointerType = (event && event.pointerType) || 'mouse';
     qaOpen(selected);
   }
 
@@ -483,6 +607,53 @@
     return false;
   }
 
+  /* v23.9.254: shared by BOTH QR popups (COMO + any-site) — the outside
+     click that dismisses a popup. A mousedown outside only ARMS the
+     dismissal; it fires on the mouseup only if the press did not move
+     (a press that moves is a (re)highlight drag, not a click). */
+  var QR_OUTSIDE_DRAG_PX = 5;
+  /* v23.9.254: touch/pen drag-selects dispatch a compatibility mousedown
+     after the pointerup that opened the popup. A mousedown inside this
+     window after a touch/pen open is that echo, not a click outside. */
+  var QR_OPEN_ECHO_MS = 500;
+
+  /* v23.9.255: sequence number of the last mouse/pointer press anywhere
+     on the page, shared by BOTH QR popups. The v243 closed-text
+     suppression (same text within 1.5 s of a close) cannot tell the
+     closing click's own trailing read from a deliberate re-highlight of
+     the same text (e.g. double-clicking the same word again) — but a
+     press AFTER the close can: the closing click's press happened
+     BEFORE the close, a fresh double-click's (or drag's) press happens
+     after it. The close functions record the sequence at close time;
+     the open functions only suppress while it has NOT advanced since
+     the close. One permanent capture listener on 'pointerdown' only:
+     every real press (mouse, touch, pen) produces exactly one
+     pointerdown, and listening on 'mousedown' too would double-count
+     and would sit ahead of the outside-dismiss handler in the document
+     mousedown list. Started once, guarded — from cbtInitQrOnly's
+     setup() on the non-COMO path and from the COMO QR section on the
+     COMO path, i.e. AFTER the COMO gate and the v241 frame guard, so a
+     framed COMO page still registers no listeners at all (the v241
+     framed-COMO test asserts exactly that). It counts presses only —
+     no polling, no observer, no timer. On a browser with no
+     PointerEvent, pointerdown never fires and the counter never
+     advances, so the suppression behaves exactly as in v254 (safe
+     fallback). */
+  var _cbtQrPressSeq = 0;
+  var _cbtQrPressSeqStarted = false;
+  function cbtQrNotePress() { _cbtQrPressSeq++; }
+  function cbtQrStartPressSeq() {
+    if (_cbtQrPressSeqStarted) return;
+    /* v23.9.256 (R7): the "started" flag used to be set BEFORE the listener
+       was registered, so a throwing addEventListener left the counter
+       permanently "started" but never counting. Set it only after the
+       registration succeeds. */
+    try {
+      document.addEventListener('pointerdown', cbtQrNotePress, true);
+      _cbtQrPressSeqStarted = true;
+    } catch (e) {}
+  }
+
   function qaQueueSelectionOpen(event) {
     if (event && qaInPopup(event.target)) return;
     /* v23.9.253: the any-site path ignores editable targets anyway
@@ -494,6 +665,7 @@
        recycled. composedPath() is captured now for shadow-root support. */
     var snapshot = {
       target: event ? event.target : null,
+      pointerType: event ? event.pointerType : undefined,
       path: []
     };
     try {
@@ -526,6 +698,9 @@
         style.textContent = QA_QR_CSS;
         (document.head || document.documentElement).appendChild(style);
       } catch (eQaStyle) {}
+      /* v23.9.255: start the shared press sequence with the QR-only
+         path (non-COMO origins, frames included). */
+      cbtQrStartPressSeq();
       if (typeof PointerEvent !== 'undefined') {
         document.addEventListener('pointerup', qaQueueSelectionOpen, true);
       } else {
@@ -2985,21 +3160,25 @@
 
   function cbtMutationIsOnlyOwnUi(mutation) {
     if (!mutation) return false;
+    /* v23.9.256 (L1): the target check above already returns before any
+       allocation when the mutation lands inside our own UI. The old code
+       then built a fresh array out of added+removed nodes (two slice
+       allocations per mutation) just to walk them — walk the live lists
+       directly instead. Same result: true only when every touched node
+       is own UI and at least one node was touched. */
     if (cbtIsOwnUiNode(mutation.target)) return true;
 
     if (mutation.type !== 'childList') return false;
 
-    var touched = [];
-    try {
-      touched = touched.concat(Array.prototype.slice.call(mutation.addedNodes || []));
-      touched = touched.concat(Array.prototype.slice.call(mutation.removedNodes || []));
-    } catch(e) {}
-
-    if (!touched.length) return false;
-    for (var i = 0; i < touched.length; i++) {
-      if (!cbtIsOwnUiNode(touched[i])) return false;
+    var _seen = false, _list, _i;
+    for (var _g = 0; _g < 2; _g++) {
+      _list = _g ? (mutation.removedNodes || []) : (mutation.addedNodes || []);
+      for (_i = 0; _i < _list.length; _i++) {
+        _seen = true;
+        if (!cbtIsOwnUiNode(_list[_i])) return false;
+      }
     }
-    return true;
+    return _seen;
   }
 
   var _storeTimezoneCache = null;
@@ -3190,9 +3369,12 @@
      order. Only row structure, headings or actual time text need a re-sort.
      Inspect both old and new text so removal of a deadline is handled too. */
   function cbtMutationNeedsSort(mutation, container) {
-    if (cbtMutationIsOnlyOwnUi(mutation)) return false;
+    /* v23.9.256 (L1): the container itself can never be own UI — check
+       identity first so a container-level mutation skips the own-UI
+       closest() walks entirely. */
     var node = mutation.target;
     if (node === container) return true;
+    if (cbtMutationIsOnlyOwnUi(mutation)) return false;
     var el = node && (node.nodeType === 1 ? node : node.parentElement);
     if (el && el.closest && el.closest('.job-card-header')) return true;
     var time = /\b\d{1,2}:\d{2}\s*(?:AM|PM)\b/i;
@@ -3224,8 +3406,12 @@
   function attach(container) {
     if (_attached === container) return;
     if (_sortObserver) _sortObserver.disconnect();
-    _attached = container;
-    sortNow(container);
+    /* v23.9.256 (R4): _attached used to be set BEFORE the fallible work,
+       so one throw in sortNow() / observer creation permanently killed
+       the sorter (ensureSortAttachment believed it was attached). Set it
+       only after the observer exists and is observing, and guard the
+       sort so a bad row cannot abort the attach. */
+    try { sortNow(container); } catch(eSortNow) {}
     // v23.9.223: sort once per animation frame, not once per mutation
     // batch. rAF still runs before paint, so no unsorted frame is shown,
     // but a burst of Angular updates no longer blocks the main thread
@@ -3233,13 +3419,22 @@
     var sortRun = coalescedFrame(function(){ if (container.isConnected) sortNow(container); });
     _sortObserver = new MutationObserver(function (mutations) {
         for (var i = 0; i < mutations.length; i++) {
+        /* v23.9.256 (L1): container-level identity first — a mutation whose
+           target IS the container needs a sort without any closest() /
+           querySelector walks. Everything else still goes through
+           cbtMutationNeedsSort, which keeps the header/time rules. */
+        if (mutations[i].target === container) { sortRun(); return; }
         if (cbtMutationNeedsSort(mutations[i], container)) {
           sortRun();
           return;
         }
       }
     });
-    _sortObserver.observe(container, { childList: true, subtree: true, characterData: true });
+    /* v23.9.256 (L14): characterDataOldValue, so mutation.oldValue is
+       actually populated for the cbtMutationNeedsSort characterData
+       branch (it was always null before). No heading cache added. */
+    _sortObserver.observe(container, { childList: true, subtree: true, characterData: true, characterDataOldValue: true });
+    _attached = container;
 
     /* Once we have the actual job-card container, stop watching the entire
        Angular document. The local container observer above is sufficient. */
@@ -3304,10 +3499,17 @@
 
   function findBatchTargetCol(row) {
     var cols = row.querySelectorAll(':scope > div[class*="col-"]');
+    /* v23.9.256 (C7): two-pass search — the old single pass took the first
+       column matching EITHER a time or "Batch Target", so an earlier
+       time-bearing column won over the real Batch Target column. */
     for (var i = 0; i < cols.length; i++) {
-      if (/\d{1,2}:\d{2}\s*(AM|PM)/i.test(cols[i].textContent) ||
-          /batch\s*target/i.test(cols[i].textContent)) {
+      if (/batch\s*target/i.test(cols[i].textContent)) {
         return { col: cols[i], idx: i };
+      }
+    }
+    for (var j = 0; j < cols.length; j++) {
+      if (/\d{1,2}:\d{2}\s*(AM|PM)/i.test(cols[j].textContent)) {
+        return { col: cols[j], idx: j };
       }
     }
     return null;
@@ -3679,9 +3881,25 @@
       for (var j = 0; j < added.length; j++) {
         /* Angular replaces task rows during live updates. Restore any cached
            yellow state inside this pre-paint observer so it never flashes off. */
-        if (queueTimerHost(added[j])) {
+        /* v23.9.256 (L1): identity pre-filter. A job-card / header node
+           itself, or the job-cards container, is queued with the full
+           walk (the container holds the cards as descendants). Any other
+           added node is queued light (matches/closest only, no subtree
+           querySelectorAll) — a descendant mutation inside an existing
+           card is still healed by the 1s tick / 10s scan. */
+        var _added = added[j];
+        var _isHost = _added && _added.nodeType === 1 && _added.matches &&
+          _added.matches('job-card, div.row.job-card-header');
+        var _isCardsContainer = _added && _added.nodeType === 1 && _added.matches &&
+          _added.matches('div.container-fluid.job-cards');
+        if (_isHost || _isCardsContainer) {
+          if (queueTimerHost(_added)) {
+            foundRelevant = true;
+            try { p1hApplyCachedToNode(_added); } catch(eP1hAdded) {}
+          }
+        } else if (queueTimerHost(_added, false)) {
           foundRelevant = true;
-          try { p1hApplyCachedToNode(added[j]); } catch(eP1hAdded) {}
+          try { p1hApplyCachedToNode(_added); } catch(eP1hAdded2) {}
         }
       }
       var removed = mutations[i].removedNodes || [];
@@ -4617,12 +4835,17 @@
        storm on a background tab used to schedule a check every second
        for a brand nobody can see. At most one retry is kept pending so
        the check still runs after the tab returns. */
-    if (document.hidden) {
-      if (_cbtBrandCheckTimer === null) {
-        _cbtBrandCheckTimer = setTimeout(function() { _cbtBrandCheckTimer = null; cbtScheduleBrandCheck(); }, 1000);
-      }
-      return;
-    }
+    /* v23.9.256 (L9): while hidden, do NOT re-arm a 1 s retry timer — the
+       old branch re-armed indefinitely, one timer per second for as long
+       as the tab stayed hidden. The check runs again when the tab
+       returns: the return handler re-renders / re-polls (panelHealthCheck,
+       requestLiveRender, pollActiveTasks), whose mutations fire the brand
+       observers, and any remount heals branding directly
+       (cbtEnsureBranding in injectPanel). Note, verified while building:
+       the return handler itself does not call the brand check directly
+       (panelHealthCheck returns early when the panel is already mounted)
+       — see README. The observed subtree is NOT narrowed. */
+    if (document.hidden) return;
     var now = Date.now();
     if (now - _cbtBrandLastCheck < 1000) {
       if (_cbtBrandCheckTimer === null) {
@@ -5255,10 +5478,12 @@
   var _cbtSnapshotRefs = new Set(), _cbtIngestSequence = 0;
   var _cbtTaskSequences = new Map();
   var _cbtDataBatchDepth=0, _cbtBatchHistory=null, _cbtBatchHistoryDirty=false;
+  var _cbtBatchMemoKeys=null; /* v23.9.256 (R3): completion memo keys set inside the current batch, so a failed deferred save can drop exactly those keys */
   var _cbtBatchWeekly=null, _cbtBatchWeeklyDirty=false, _cbtBatchWeeklyPeriod=null, _cbtBatchWeeklyPush=false;
   var _cbtBatchHof=null, _cbtBatchHofDirty=false;
   function cbtRunDataBatch(fn) {
     _cbtDataBatchDepth++;
+    if (_cbtDataBatchDepth === 1) _cbtBatchMemoKeys = [];
     try { return fn(); }
     finally {
       _cbtDataBatchDepth--;
@@ -5267,12 +5492,24 @@
         var hof=_cbtBatchHof, saveHof=_cbtBatchHofDirty;
         var weekly=_cbtBatchWeekly, saveWeek=_cbtBatchWeeklyDirty;
         var weekPeriod=_cbtBatchWeeklyPeriod, pushWeek=_cbtBatchWeeklyPush;
+        var _batchMemoKeys = _cbtBatchMemoKeys; _cbtBatchMemoKeys = null;
         _cbtBatchHistory=null; _cbtBatchHistoryDirty=false;
         _cbtBatchHof=null; _cbtBatchHofDirty=false;
         _cbtBatchWeekly=null; _cbtBatchWeeklyDirty=false; _cbtBatchWeeklyPeriod=null; _cbtBatchWeeklyPush=false;
-        if (save && history) saveHistory(history);
+        /* v23.9.256 (R3): the old code ignored the deferred save returns
+           in this finally — a failed save kept the completion memo, so
+           the cart was lost for the session (same root cause as C2).
+           Delete exactly the memo keys this batch set on failure, so a
+           later presentation retries. */
+        var _hSaveOk = true, _wSaveOk = true;
+        if (save && history) _hSaveOk = saveHistory(history);
         if (saveHof && hof) hofSaveOwnTotals(hof);
-        if (saveWeek && weekly) saveWeekly(weekly,!pushWeek,weekPeriod);
+        if (saveWeek && weekly) _wSaveOk = saveWeekly(weekly,!pushWeek,weekPeriod);
+        if ((!_hSaveOk || !_wSaveOk) && _batchMemoKeys) {
+          try {
+            for (var _mi = 0; _mi < _batchMemoKeys.length; _mi++) _cbtCompletionMemo.delete(_batchMemoKeys[_mi]);
+          } catch(eMemoBatch) {}
+        }
       }
     }
   }
@@ -5312,6 +5549,13 @@
       (Array.isArray(data.operationDetails) ? data.operationDetails : []).filter(Boolean).map(function(op){ return [op.name,op.state,op.operationState,op.start,op.end].join(':'); }).join('|')].join('~');
   }
   function cbtApplyLiveSnapshot(payload, sequence) {
+    /* v23.9.256 (L3): prove staleness BEFORE touching the payload at all —
+       a snapshot older than the last applied one used to pay the
+       cbtLiveItems envelope walk first. The canonical walk below still
+       runs only for live snapshots. The deepCaptureNames + afaRecordJobs
+       merge was NOT done: the two walks have different side effects and
+       caps, and equivalence could not be proven by test (see README). */
+    if (sequence != null && sequence < _cbtLastSnapshotSequence) return false;
     var items = cbtLiveItems(payload);
     // Unknown envelopes and failed reads never clear valid current work.
     if (items == null || sequence < _cbtLastSnapshotSequence) return false;
@@ -5594,6 +5838,7 @@
         try { gmSet(OWN_WEEKLY_KEY, _rb); } catch(eRB) {}
         try { localStorage.setItem(OWN_WEEKLY_KEY, _rb); } catch(eRB2) {}
       } else {
+        try { if (typeof GM_deleteValue === 'function') GM_deleteValue(OWN_WEEKLY_KEY); } catch(eRB4) {} /* v23.9.256 (C5/R1): as above */
         try { localStorage.removeItem(OWN_WEEKLY_KEY); } catch(eRB3) {}
       }
       return false;
@@ -5613,10 +5858,11 @@
         try { gmSet(OWN_WEEKLY_KEY, _rb); } catch(eWPRB) {}
         try { localStorage.setItem(OWN_WEEKLY_KEY, _rb); } catch(eWPRB2) {}
       } else {
+        try { if (typeof GM_deleteValue === 'function') GM_deleteValue(OWN_WEEKLY_KEY); } catch(eWPRB3b) {} /* v23.9.256 (C5/R1): as above */
         try { localStorage.removeItem(OWN_WEEKLY_KEY); } catch(eWPRB3) {}
       }
       try { if (_hadOldPeriodLs) localStorage.setItem(WEEKLY_PERIOD_KEY, _oldPeriodLs); else localStorage.removeItem(WEEKLY_PERIOD_KEY); } catch(eWPRB4) {}
-      try { if (_hadOldPeriodGm) gmSet(WEEKLY_PERIOD_KEY, _oldPeriodGm); } catch(eWPRB5) {}
+      try { if (_hadOldPeriodGm) gmSet(WEEKLY_PERIOD_KEY, _oldPeriodGm); else if (typeof GM_deleteValue === 'function') GM_deleteValue(WEEKLY_PERIOD_KEY); } catch(eWPRB5) {}
       return false;
     }
     if (!skipPush) {
@@ -5659,6 +5905,11 @@
       localStorage.setItem(REMOTE_WEEKLY_KEY, json);
       localStorage.setItem(REMOTE_WEEKLY_PERIOD_KEY, currentWeek);
     } catch(e) {}
+    /* v23.9.256 (C3): verify read-back and report success, as above. */
+    var _rwLsOk = false, _rwGmOk = false;
+    try { _rwLsOk = (localStorage.getItem(REMOTE_WEEKLY_KEY) === json) && (localStorage.getItem(REMOTE_WEEKLY_PERIOD_KEY) === currentWeek); } catch(eRV3) {}
+    try { _rwGmOk = (gmGet(REMOTE_WEEKLY_KEY, null) === json) && (gmGet(REMOTE_WEEKLY_PERIOD_KEY, null) === currentWeek); } catch(eRV4) {}
+    return _rwLsOk && ((typeof GM_setValue !== 'function') || _rwGmOk);
     // Never push — this is display-only aggregated data
   }
 
@@ -5690,10 +5941,15 @@
 
     /* v23.9.84+ stores bestRate explicitly. For older cached rows, use the
        strongest recoverable value (bestRate -> lastRate -> avgRate). */
+    /* v23.9.256 (C6): an avgRate over the trusted ceiling must not
+       re-inflate bestRate after the sanitizer clamped it — only a
+       plausible avgRate may contribute. */
+    var _avgCandidate = Number(source.avgRate) || 0;
+    if (_avgCandidate > CBT_MAX_VALID_RATE) _avgCandidate = 0;
     var candidate = Math.max(
       Number(source.bestRate) || 0,
       Number(source.lastRate) || 0,
-      Number(source.avgRate) || 0
+      _avgCandidate
     );
 
     if (!(candidate > 0) || !isFinite(candidate)) return;
@@ -5707,7 +5963,9 @@
   // batcher appears in Weekly immediately — not one day later at rollover.
   function getDisplayWeekly() {
     var _now = Date.now();
-    if (_dispWeekCache && (_now - _dispWeekTime) < 1500) return _dispWeekCache;
+    /* v23.9.256 (L4): 1.5 s -> 10 s, as above. No per-associate
+       shortcut (v253 L4, still rejected). */
+    if (_dispWeekCache && (_now - _dispWeekTime) < 10000) return _dispWeekCache;
     var own    = loadWeekly();
     var remote = loadRemoteWeekly();
     var out = {};
@@ -5742,7 +6000,7 @@
           runs: r2.runs||0,
           totalMissing: r2.totalMissing||0,
           totalExpected: r2.totalExpected||0,
-          bestRate: Math.max(Number(r2.bestRate)||0, Number(r2.lastRate)||0, Number(r2.avgRate)||0) || null,
+          bestRate: Math.max(Number(r2.bestRate)||0, Number(r2.lastRate)||0, ((Number(r2.avgRate)||0) > CBT_MAX_VALID_RATE ? 0 : (Number(r2.avgRate)||0))) || null, /* v23.9.256 (C6): same avgRate guard as cbtMergeBestFields */
           lastRate: Number(r2.lastRate) > 0 ? Number(r2.lastRate) : null,
           lastAt: Number(r2.lastAt) || 0, _cbtEvents:r2._cbtEvents || {}, _cbtLegacy:cbtPerformanceLegacy(r2)
         };
@@ -6738,9 +6996,19 @@
       if (!_cbtHistoryArchiveCorrupt) { try { console.warn('[COMO] history archive is damaged (unparseable); refusing to overwrite it'); } catch(eW) {} }
       _cbtHistoryArchiveCorrupt = true;
     }
-    if (!arch || typeof arch !== 'object') arch = {};
-    if (!arch.days || typeof arch.days !== 'object') arch.days = {};
-    if (!arch.meta || typeof arch.meta !== 'object') arch.meta = {runs:0, pkgs:0, days:0, associates:{}};
+    /* v23.9.256 (R14): a present-but-wrong-shape days/meta used to be
+       silently repaired, so saves then overwrote a corrupt archive. Flag
+       it, exactly like the unparseable-blob case above, so saves refuse
+       until it is repaired by hand. A fresh install (no raw blob at all)
+       is NOT corruption. */
+    var _shapeBad = false;
+    if (!arch || typeof arch !== 'object') { arch = {}; _shapeBad = true; }
+    if (!arch.days || typeof arch.days !== 'object') { arch.days = {}; _shapeBad = true; }
+    if (!arch.meta || typeof arch.meta !== 'object') { arch.meta = {runs:0, pkgs:0, days:0, associates:{}}; _shapeBad = true; }
+    if (_shapeBad && _sawRaw && _parsedOk) {
+      if (!_cbtHistoryArchiveCorrupt) { try { console.warn('[COMO] history archive has a wrong-shape days/meta; refusing to overwrite it'); } catch(eW4) {} }
+      _cbtHistoryArchiveCorrupt = true;
+    }
     return arch;
   }
   function cbtSaveHistoryArchive(arch) {
@@ -6912,7 +7180,7 @@
       bestRate: Number(merged.bestRate) > 0 ? Number(merged.bestRate) : null,
       lastRate: Number(merged.lastRate) > 0 ? Number(merged.lastRate) : null,
       lastAt: Number(merged.lastAt) || 0,
-      avgRate: Number(merged.avgRate) || 0
+      avgRate: Math.min(Number(merged.avgRate) || 0, CBT_MAX_VALID_RATE) /* v23.9.256 (C6): clamp — the sanitizers rebuild through here */
     };
     var out = Object.assign({}, merged, {_cbtLegacy: legacy, _cbtEvents: {}});
     out.totalPkgs = legacy.totalPkgs; out.totalSec = legacy.totalSec;
@@ -7044,7 +7312,10 @@
       /* v23.9.225 (audit G2): save under the saved day's own week, so a
          Saturday roll is not dropped by the current-week filter. Mid-week
          this is the current week, unchanged. */
-      saveWeekly(w, false, cbtWeekStartForDateKey(sd));
+      /* v23.9.256 (R2): a failed weekly save must be visible to the
+         caller — returning the merged week as if it saved let the reset
+         wipe Today anyway. null means "roll failed, do not wipe". */
+      if (saveWeekly(w, false, cbtWeekStartForDateKey(sd)) === false) return null;
       return w;
     } catch(e) {}
   }
@@ -7076,7 +7347,9 @@
       CBT_TOTAL_FIELDS.forEach(function(field){ base[field] = Math.max(0,base[field]); });
     }
     var metadata=record._cbtLegacy || (Object.keys(events).length ? {} : record);
-    base.bestRate=Math.max(Number(metadata.bestRate)||0,Number(metadata.lastRate)||0,Number(metadata.avgRate)||0) || null;
+    var _legacyAvg = Number(metadata.avgRate) || 0;
+    if (_legacyAvg > CBT_MAX_VALID_RATE) _legacyAvg = 0; /* v23.9.256 (C6): as above — a >20 avgRate must not re-inflate bestRate */
+    base.bestRate=Math.max(Number(metadata.bestRate)||0,Number(metadata.lastRate)||0,_legacyAvg) || null;
     base.lastRate=Number(metadata.lastRate)>0?Number(metadata.lastRate):null; base.lastAt=Number(metadata.lastAt)||0;
     return base;
   }
@@ -7245,6 +7518,7 @@
         c.lastRate = null;
         c.lastAt = 0;
       }
+      if (Number(c.avgRate) > CBT_MAX_VALID_RATE) c.avgRate = CBT_MAX_VALID_RATE; /* v23.9.256 (C6): clamp stored avgRate */
       var key = cbtAssociateKey(c.assoc || a); if (!key) continue;
       c.assoc = key;
       CBT_TOTAL_FIELDS.forEach(function(field){ c[field]=cbtNonnegative(c[field]); });
@@ -7309,7 +7583,9 @@
     if (savedDay && !crossedWeek) {
       /* Monday-Saturday midnight: yesterday belongs to the SAME current week,
          so preserve its Today report before clearing Today. */
-      try { rollDailyIntoWeekly(); } catch(e2) {}
+      /* v23.9.256 (R2): a failed roll leaves Today intact for retry —
+         the next call retries the roll instead of losing yesterday. */
+      try { if (rollDailyIntoWeekly() === null) return false; } catch(e2) {}
       /* v23.9.242: yesterday's per-cart profile detail is now
          archived at the end of the day (full detail kept in
          cbt_history_archive) and the live weekly row for it is
@@ -7327,8 +7603,10 @@
          new-week wipe below. The Weekly tab stays calendar-week only, so
          the archived day is preserved in storage, not displayed — see
          README (v23.9.225, G2). */
-      var _rolledDay = null;
-      try { var _rw = rollDailyIntoWeekly(); if (_rw && savedDay && _rw[savedDay]) _rolledDay = _rw[savedDay]; } catch(e2r) {}
+      var _rolledDay = null, _rollFailed = false;
+      try { var _rw = rollDailyIntoWeekly(); if (_rw === null) _rollFailed = true; else if (_rw && savedDay && _rw[savedDay]) _rolledDay = _rw[savedDay]; } catch(e2r) {}
+      /* v23.9.256 (R2): as above — a failed roll must not reach the wipe. */
+      if (_rollFailed) return false;
       if (_rolledDay) {
         try {
           /* v23.9.253: the old blob held only the single most recent day
@@ -7364,8 +7642,13 @@
       var _cwArchOk = true;
       try { if (typeof cbtLoadRawWeekly === 'function' && typeof cbtArchiveHistoryDays === 'function') { var _oldWeek = cbtLoadRawWeekly(); if (_oldWeek && Object.keys(_oldWeek).length) _cwArchOk = cbtArchiveHistoryDays(_oldWeek) >= 0; } } catch(eArchW) { _cwArchOk = false; }
       if (_cwArchOk) {
-        saveWeekly({}, true, currentWeek);
-        saveRemoteWeekly({}, currentWeek);
+        /* v23.9.256 (R2/C3): check the wipe — a failed new-week save must
+           not be followed by the Today wipe below. The old week was
+           already archived, so a failure here is stale display only, and
+           the next call retries. The remote wipe is a display cache; its
+           failure is warned, not blocking. */
+        if (saveWeekly({}, true, currentWeek) === false) return false;
+        if (saveRemoteWeekly({}, currentWeek) === false) { try { console.warn('[COMO] remote weekly wipe failed verification'); } catch(eRemW) {} }
         try {
           if (_weeklyPulled) syncWeeklyPush();
           else _weeklyPushQueued = true;
@@ -7377,16 +7660,31 @@
     }
 
     /* Every store midnight starts a completely empty Today report. */
-    try { localStorage.removeItem(STORAGE_KEY); } catch(e5) {}
-    gmSet(STORAGE_KEY, '{}');
-
+    /* v23.9.256 (C3/R6): the old tail wiped Today with unverified direct
+       writes — a failed GM write could resurrect yesterday as Today (and
+       double-count it in Weekly). The wipe now goes through the verified
+       saveHistory (blob + date key, both mirrors verified, rollback on
+       failure — and it stamps DATE_KEY = today itself, so the direct
+       date writes below are gone). On failure Today is left intact:
+       retry once, and if it still fails return false so the next call
+       retries instead of wiping blind. The remote-history clear is
+       display-only and only runs after the verified wipe. */
+    var _wipeOk = false;
+    try { _wipeOk = saveHistory({}, true); } catch(eWipe) { _wipeOk = false; }
+    if (!_wipeOk) {
+      try { _wipeOk = saveHistory({}, true); } catch(eWipe2) { _wipeOk = false; }
+    }
+    if (!_wipeOk) return false;
+    /* Restore the pre-v256 end state: the old tail removed the LS key
+       (GM kept '{}'). The verified save above leaves '{}' in LS; removing
+       it again keeps every reader's view identical, and if the remove
+       itself fails LS still holds the verified empty blob — still empty. */
+    try { localStorage.removeItem(STORAGE_KEY); } catch(eWipeLs) {}
     try {
-      localStorage.setItem(DATE_KEY, currentDay);
       localStorage.removeItem(REMOTE_HISTORY_KEY);
       localStorage.setItem(REMOTE_HISTORY_DATE_KEY, currentDay);
     } catch(e6) {}
-    gmSet(DATE_KEY, currentDay);
-    saveRemoteHistory({}, currentDay);
+    try { if (saveRemoteHistory({}, currentDay) === false) { try { console.warn('[COMO] remote history wipe failed verification'); } catch(eRemH) {} } } catch(eRemH2) {}
 
     _dispHistCache = null;
     _dispWeekCache = null;
@@ -7510,6 +7808,13 @@
         try { gmSet(STORAGE_KEY, _hRb); } catch(eHRB) {}
         try { localStorage.setItem(STORAGE_KEY, _hRb); } catch(eHRB2) {}
       } else {
+        /* v23.9.256 (C5/R1): without a GM_deleteValue grant a failed save
+           left the GM mirror holding the NEW blob while localStorage was
+           empty — the next load resurrected the new data. Delete the GM
+           key too when there was no old value (guarded: an old
+           Tampermonkey without the grant falls back to the old
+           behaviour). */
+        try { if (typeof GM_deleteValue === 'function') GM_deleteValue(STORAGE_KEY); } catch(eHRB4) {}
         try { localStorage.removeItem(STORAGE_KEY); } catch(eHRB3) {}
       }
       return false;
@@ -7530,10 +7835,11 @@
         try { gmSet(STORAGE_KEY, _hRb); } catch(eHDRB) {}
         try { localStorage.setItem(STORAGE_KEY, _hRb); } catch(eHDRB2) {}
       } else {
+        try { if (typeof GM_deleteValue === 'function') GM_deleteValue(STORAGE_KEY); } catch(eHDRB3b) {}
         try { localStorage.removeItem(STORAGE_KEY); } catch(eHDRB3) {}
       }
       try { if (_hHadOldDateLs) localStorage.setItem(DATE_KEY, _hOldDateLs); else localStorage.removeItem(DATE_KEY); } catch(eHDRB4) {}
-      try { if (_hHadOldDateGm) gmSet(DATE_KEY, _hOldDateGm); } catch(eHDRB5) {}
+      try { if (_hHadOldDateGm) gmSet(DATE_KEY, _hOldDateGm); else if (typeof GM_deleteValue === 'function') GM_deleteValue(DATE_KEY); } catch(eHDRB5) {}
       return false;
     }
     if (!skipPush) { setTimeout(function(){ if (typeof syncHistoryPush === 'function') syncHistoryPush(); }, 0); }
@@ -7568,12 +7874,23 @@
       localStorage.setItem(REMOTE_HISTORY_KEY, json);
       localStorage.setItem(REMOTE_HISTORY_DATE_KEY, dk);
     } catch(e) {}
+    /* v23.9.256 (C3): verify read-back and report success, like the other
+       save functions (remote is display-only, so callers warn rather
+       than block on a failure). GM is required only when the GM API
+       exists. */
+    var _rhLsOk = false, _rhGmOk = false;
+    try { _rhLsOk = (localStorage.getItem(REMOTE_HISTORY_KEY) === json) && (localStorage.getItem(REMOTE_HISTORY_DATE_KEY) === dk); } catch(eRV) {}
+    try { _rhGmOk = (gmGet(REMOTE_HISTORY_KEY, null) === json) && (gmGet(REMOTE_HISTORY_DATE_KEY, null) === dk); } catch(eRV2) {}
+    return _rhLsOk && ((typeof GM_setValue !== 'function') || _rhGmOk);
     // Never push — display-only
   }
   // Merge own + remote for display only
   function getDisplayHistory() {
     var _now = Date.now();
-    if (_dispHistCache && (_now - _dispHistTime) < 1500) return _dispHistCache;
+    /* v23.9.256 (L4): 1.5 s -> 10 s, the verified-report TTL — a tab
+       switch within the window reuses the display cache instead of
+       rebuilding it. Saves still invalidate immediately. */
+    if (_dispHistCache && (_now - _dispHistTime) < 10000) return _dispHistCache;
     var own    = loadHistory();
     var remote = sanitizeHistory(loadRemoteHistory());
     var out = {};
@@ -7652,14 +7969,31 @@
     try { return JSON.parse(localStorage.getItem(key) || '{}'); } catch(e) { return {}; }
   }
   function hofSaveJson(key, obj) {
+    /* v23.9.256 (C4): verify read-back and report success — the HOF flush
+       only drops its queue after a verified save (see cbtFlushHofBatches).
+       (L7): the blob hash is stored here, at save time, so cbtHofRows can
+       reuse it instead of re-hashing four blobs on every read. GM is
+       required only when the GM API exists; without it, the localStorage
+       mirror alone verifies. */
     var json = JSON.stringify(obj || {});
     if (gmGet(key,null)!==json) gmSet(key, json);
     try { if(localStorage.getItem(key)!==json)localStorage.setItem(key, json); } catch(e) {}
+    var _hofLsOk = false, _hofGmOk = false;
+    try { _hofLsOk = (localStorage.getItem(key) === json); } catch(eHV) {}
+    try { _hofGmOk = (gmGet(key, null) === json); } catch(eHV2) {}
+    var _hofGmAvail = (typeof GM_setValue === 'function');
+    var _hofOk = _hofLsOk && (!_hofGmAvail || _hofGmOk);
+    if (_hofOk) {
+      /* The stored key is the blob part only (queue suffix stripped) —
+         cbtHofStoredRawKey appends the live queue length at read time. */
+      try { if (typeof cbtHofRawKey === 'function') _cbtHofStoredRawKey = cbtHofRawKey().replace(/\|q\d+$/, ''); } catch(eHK) {}
+    }
+    return _hofOk;
   }
   function hofLoadPeaks()        { return hofLoadJson(HOF_PEAKS_KEY) || {}; }
-  function hofSavePeaks(p)       { try { cbtInvalidateHofRows(); } catch(e) {} hofSaveJson(HOF_PEAKS_KEY, p); }
+  function hofSavePeaks(p)       { try { cbtInvalidateHofRows(); } catch(e) {} return hofSaveJson(HOF_PEAKS_KEY, p); }
   function hofLoadLatest()       { return hofLoadJson(HOF_LATEST_KEY) || {}; }
-  function hofSaveLatest(p)      { try { cbtInvalidateHofRows(); } catch(e) {} hofSaveJson(HOF_LATEST_KEY, p); }
+  function hofSaveLatest(p)      { try { cbtInvalidateHofRows(); } catch(e) {} return hofSaveJson(HOF_LATEST_KEY, p); }
   function hofLoadOwnTotals()    {
     if (_cbtDataBatchDepth && _cbtBatchHof) return _cbtBatchHof;
     var totals=cbtNormalizeHofTotals(hofLoadJson(HOF_OWN_KEY) || {});
@@ -7668,11 +8002,11 @@
   }
   function hofSaveOwnTotals(t)   {
     try { cbtInvalidateHofRows(); } catch(e) {}
-    if (_cbtDataBatchDepth) { _cbtBatchHof=t;_cbtBatchHofDirty=true;return; }
-    hofSaveJson(HOF_OWN_KEY, cbtNormalizeHofTotals(t));
+    if (_cbtDataBatchDepth) { _cbtBatchHof=t;_cbtBatchHofDirty=true;return true; }
+    return hofSaveJson(HOF_OWN_KEY, cbtNormalizeHofTotals(t));
   }
   function hofLoadRemoteTotals() { return cbtNormalizeHofTotals(hofLoadJson(HOF_REMOTE_KEY) || {}); }
-  function hofSaveRemoteTotals(t){ try { cbtInvalidateHofRows(); } catch(e) {} hofSaveJson(HOF_REMOTE_KEY, cbtNormalizeHofTotals(t)); }
+  function hofSaveRemoteTotals(t){ try { cbtInvalidateHofRows(); } catch(e) {} return hofSaveJson(HOF_REMOTE_KEY, cbtNormalizeHofTotals(t)); }
 
   /* Latest is different from Peak: it ALWAYS follows the newest completed
      batch, even if that rate is lower than the associate's personal best. */
@@ -8028,8 +8362,26 @@
       if (cur && typeof cur.rate === 'number' && cur.rate >= q.rate) return;
       hofPushPeak(key, q.assoc, q.rate, latestTs, q.pkgs, q.elapsedSec);
     });
-    hofSaveOwnTotals(own);
-    if (latestChanged) hofSaveLatest(latest);
+    /* v23.9.256 (C4): the queue used to be dropped at the top of this
+       function, BEFORE these saves — a storage failure lost the batch's
+       Fastest totals/peaks/latest for good. Only the verified saves
+       below may consume the batch; on failure it goes back on the queue
+       for the next flush (the Firebase push and the render are skipped
+       too, so a failed local save cannot diverge from the server). The
+       peak merges inside the loop above are idempotent (hofMergePeak
+       only ever moves upward, and the own-totals merge dedupes by
+       completion id), so a re-queued batch re-merges instead of
+       double-counting. */
+    var _flushOwnOk = hofSaveOwnTotals(own);
+    var _flushLatestOk = !latestChanged || hofSaveLatest(latest);
+    /* Only an explicit false is a failure: a deferred save (the batch
+       path) or a caller that reports nothing must not be treated as a
+       lost write — that would re-queue a batch that is already saved and
+       skip the push + render for data that is fine. */
+    if (_flushOwnOk === false || _flushLatestOk === false) {
+      _cbtHofPendingBatches = queued.concat(_cbtHofPendingBatches);
+      return;
+    }
     hofPushTotals();
     cbtScheduleHofRender();
   }
@@ -8074,7 +8426,24 @@
      ranked rows are now cached and reused until the underlying HOF data
      changes. */
   var _cbtHofRowsCache = null, _cbtHofRowsCacheKey = '';
+  var _cbtHofStoredRawKey = null; /* v23.9.256 (L7): blob hash stored by hofSaveJson, queue suffix stripped */
   function cbtInvalidateHofRows() { _cbtHofRowsCache = null; _cbtHofRowsCacheKey = ''; }
+  /* v23.9.256 (L7): the blob hash is computed only on hofSave* (which
+     already calls cbtInvalidateHofRows) and stored alongside the cache,
+     instead of re-hashing the full blobs on every read. The queue length
+     is still appended live — a pending flush must never hide behind a
+     matching key. cbtHofRawKey itself is untouched (extract-based tests
+     pull it alone), and a cross-tab HOF write clears the stored key via
+     the storage handler below. The flush-before-rebuild order is
+     unchanged. */
+  function cbtHofStoredRawKey() {
+    if (typeof _cbtHofStoredRawKey !== 'string' || !_cbtHofStoredRawKey) {
+      try { _cbtHofStoredRawKey = cbtHofRawKey().replace(/\|q\d+$/, ''); }
+      catch(eSK) { return cbtHofRawKey(); }
+    }
+    var _q = (typeof _cbtHofPendingBatches !== 'undefined' && _cbtHofPendingBatches) ? _cbtHofPendingBatches.length : 0;
+    return _cbtHofStoredRawKey + '|q' + _q;
+  }
   function cbtHofRawKey() {
     /* v23.9.253: the old key sampled only 8 evenly-spaced char codes,
        so two same-length blobs differing at an unsampled position
@@ -8121,10 +8490,10 @@
        length, so a pending flush cannot hide behind a matching key; on a
        miss the flush runs, the key is recomputed, and the cache is checked
        again before rebuilding (a flush that changed nothing still hits). */
-    var key = cbtHofRawKey();
+    var key = cbtHofStoredRawKey();
     if (_cbtHofRowsCache && _cbtHofRowsCacheKey === key) return _cbtHofRowsCache;
     try { cbtFlushHofBatches(); } catch(e) {}
-    key = cbtHofRawKey();
+    key = cbtHofStoredRawKey();
     if (_cbtHofRowsCache && _cbtHofRowsCacheKey === key) return _cbtHofRowsCache;
     var peaks   = hofLoadPeaks();
     var latest  = hofLoadLatest();
@@ -8611,6 +8980,10 @@
     var collected = collectedRaw > 0 ? collectedRaw : pkgs;
     var event={cartRef:String(data.shortClientRef || ""),startAt:info.startMs,endAt:info.endMs,pkgs:pkgs,sec:elapsedSec,missing:Math.max(0,expected-collected),expected:expected,at:info.endMs,revision:cbtSourceUpdatedMs(data)||info.endMs,short:elapsedSec<30};
     _cbtCompletionMemo.delete(memoKey); _cbtCompletionMemo.set(memoKey,signature);
+    /* v23.9.256 (R3): remember the key for the batch finally above, so a
+       failed deferred save can drop it (the direct save paths delete it
+       themselves via C2). */
+    try { if (_cbtBatchMemoKeys) _cbtBatchMemoKeys.push(memoKey); } catch(eMemoBatch2) {}
     if (_cbtCompletionMemo.size>1000) _cbtCompletionMemo.delete(_cbtCompletionMemo.keys().next().value);
     var previous=current._cbtEvents && current._cbtEvents[id];
     if (previous && cbtCompareCompletion(event,previous)<=0) return false;
@@ -8704,11 +9077,21 @@
       var _owArchOk = true;
       try { if (typeof cbtArchiveHistoryDays === 'function') _owArchOk = cbtArchiveHistoryDays(_ad) >= 0; } catch(eArchOW) { _owArchOk = false; }
       if (!_owArchOk) { try { _cbtCompletionMemo.delete(memoKey); } catch(eMemoDel) {} }
-    } else if (weekly) { weekly[day]=history; saveWeekly(weekly);
+    } else if (weekly) { weekly[day]=history;
+      /* v23.9.256 (C2): capture the save return — on failure drop the
+         completion memo (set at the top of this function, mirroring the
+         existing out-of-week _owArchOk pattern) so a later presentation
+         of the same cart retries instead of losing it for the session
+         while Fastest still shows it. */
+      var _wOk256 = saveWeekly(weekly);
+      if (!_wOk256) { try { _cbtCompletionMemo.delete(memoKey); } catch(eMemoDel2) {} }
       if (_archRev) { var _rd = {}; _rd[day] = {}; _rd[day][assoc] = history[assoc];
         try { if (typeof cbtArchiveHistoryDays === 'function') cbtArchiveHistoryDays(_rd); } catch(eArchRevSave) {} }
     }
-    else saveHistory(history);
+    else {
+      var _hOk256 = saveHistory(history);
+      if (!_hOk256) { try { _cbtCompletionMemo.delete(memoKey); } catch(eMemoDel3) {} } /* v23.9.256 (C2): as above */
+    }
     try { hofRecordBatch(assoc,pkgs,elapsedSec,rate,{id:id,at:info.endMs,revision:event.revision}); } catch(e) {}
     cbtScheduleReportRefresh();
     return true;
@@ -9452,6 +9835,15 @@
        exists (see the style reset below), so a failed mount leaves the
        panel parked and the retry chain re-runs injectPanel(). */
     var wasParked = !!(existing && existing._cbtParked);
+    /* v23.9.256 (C8): the early return below used to run before the
+       stale-twin removal further down, so a mounted DOM panel that is
+       NOT the cached node persisted alongside the parked one. Remove
+       the twin first — but only when the cached node exists and differs
+       (never remove a working mounted panel when _panel2Ref is null). */
+    if (existing && existing.isConnected && !wasParked && _panel2Ref && existing !== _panel2Ref) {
+      try { existing.remove(); } catch(eStalePanel2) {}
+      existing = null;
+    }
     if (existing && existing.isConnected && !wasParked) return;
     /* v23.9.253: a DOM panel that is NOT the cached node (a stale twin
        from a second injection) is removed so two #cbt-panel nodes can
@@ -9630,6 +10022,24 @@
   }
 
   var _unifiedCountTimer = null;
+  var _cbtVerifiedSearchTimer = null, _cbtVerifiedSearchTerm = '';
+  /* v23.9.256 (L5c): the verified half of unified search (Today / Weekly /
+     Saved Names, i.e. renderLiveSearch) runs on a 150 ms trailing timer;
+     the Live table narrows instantly from taskCache via renderLive on the
+     rAF tab render. An empty term still clears the results immediately. */
+  function cbtScheduleVerifiedSearch(term) {
+    _cbtVerifiedSearchTerm = term == null ? '' : String(term);
+    if (_cbtVerifiedSearchTimer) { clearTimeout(_cbtVerifiedSearchTimer); _cbtVerifiedSearchTimer = null; }
+    if (!_cbtVerifiedSearchTerm.trim()) {
+      try { renderLiveSearch(''); } catch(e) {}
+      return;
+    }
+    _cbtVerifiedSearchTimer = setTimeout(function(){
+      _cbtVerifiedSearchTimer = null;
+      if (activeTab !== 'live' || cbtIsPanelCollapsed()) return;
+      try { renderLiveSearch(_cbtVerifiedSearchTerm); } catch(e2) {}
+    }, 150);
+  }
   /* v23.9.226: Names/Fastest set the exact search-match count when they
      render, because with chunked/capped rendering the DOM no longer holds
      every matching row when the badge is computed. */
@@ -9746,7 +10156,7 @@
 
   function renderActiveSearchTab() {
     if (cbtIsPanelCollapsed()) return; /* v23.9.227: collapsed = off */
-    if (activeTab === 'live') { renderLive(); renderLiveSearch(dashboardSearchTerm); }
+    if (activeTab === 'live') { renderLive(); cbtScheduleVerifiedSearch(dashboardSearchTerm); }
     else if (activeTab === 'history') renderHistory();
     else if (activeTab === 'weekly') renderWeekly();
     else if (activeTab === 'names') renderNames();
@@ -10046,11 +10456,11 @@
       html += '<div class="cbt-search-result-section">WEEKLY</div>';
       weeklyEntries.forEach(function(e) {
         shown.add(e.assoc.toLowerCase());
-        var avgRate = e.totalPkgs / (e.totalSec / 60);
+        var avgRate = e.totalSec > 0 ? e.totalPkgs / (e.totalSec / 60) : 0; /* v23.9.256 (R10): divide-by-zero guard */
         var rateCls = avgRate >= WARN_RATE ? 'good' : avgRate >= ALERT_RATE ? 'warn' : 'alert';
         html += '<div class="cbt-search-row"><span class="cbt-search-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span>' +
         '<span class="cbt-search-row-mid"><span style="display:inline-block;width:45px;text-align:right;">' + e.daysSet.size + '</span> days | <span style="display:inline-block;width:50px;text-align:left;">' + e.totalPkgs + '</span> pkgs</span>' +
-        '<span class="cbt-search-row-rate"><span class="cbt-hist-rate ' + rateCls + '">' + avgRate.toFixed(1) + '</span></span></div>';
+        '<span class="cbt-search-row-rate"><span class="cbt-hist-rate ' + rateCls + '">' + (isFinite(avgRate) ? avgRate.toFixed(1) : '—') + '</span></span></div>';
       });
     }
 
@@ -10229,6 +10639,10 @@
     empty.style.display='none';
     var html='', views=[];
     for(var i=0;i<rows.length;i++){
+      /* v23.9.256 (R9): one bad row must not abort the whole Live render —
+         skip it, exactly like the v253 tickLive / cbtUpdateTaskCounts
+         pattern. */
+      try {
       var data=rows[i].d,assoc=data.associateId||data.associate||data.driverAssignment||data.shortClientRef,shortRef=data.shortClientRef,r=rows[i].r;
       var elMin=r.elapsedSec!=null?r.elapsedSec/60:0;
       var elCls=r.elapsedSec!=null?(elMin>=ALERT_ELAPSED_MIN?'alert':elMin>=WARN_ELAPSED_MIN?'warn':''):'';
@@ -10254,6 +10668,7 @@
       views.push({key:rowKey,elCls:elCls,elTxt:elTxt,start:r.startMs||'',live:(r.inProgress&&!r.paused)?'1':'0',
         timeTitle:r.timeTitle||'',rateCls:rateCls,rateTxt:rateTxt,rateTitle:rateTitle,slow:slow,assoc:assoc,ref:shortRef,paused:!!r.paused,rowHtml:rowHtml});
       html+=rowHtml;
+      } catch(eLiveRow) {}
     }
     var structure = html.replace(/(<span class="cbt-elapsed [^"]*" data-start="[^"]*" data-live="[^"]*">)[^<]*(<\/span>)/g, '$1$2');
     if (tbody._cbtLiveStructure !== structure) {
@@ -10510,6 +10925,8 @@
     if(historySearchTerm){var term=historySearchTerm.toLowerCase();filtered=ranked.filter(function(e){return e.assoc.toLowerCase().indexOf(term)!==-1;});filtered=prioritizeNameMatches(filtered,term,function(e){return e.assoc;});}
     var rowsHtml=[];
     for(var i=0;i<filtered.length;i++){
+      /* v23.9.256 (R9): one bad row must not abort the whole Today render. */
+      try {
       var e=filtered[i],bestRate=Number(e.bestRate)||0;
       var rateCls=bestRate>=WARN_RATE?'good':bestRate>=ALERT_RATE?'warn':'alert';
       var rk=e._displayRank||0;
@@ -10519,6 +10936,7 @@
         +'<td><span class="cbt-hist-meta">'+e.runs+'</span></td><td><span class="cbt-hist-meta">'+e.totalPkgs+'</span></td>'
         +'<td>'+(bestRate>0?'<span class="cbt-hist-rate '+rateCls+'">'+bestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td>'
         +'<td>'+(latestRate>0?'<span class="cbt-hist-rate '+latestCls+'">'+latestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td></tr>');
+      } catch(eHistRow) {}
     }
     cbtPaintRowsChunked(tbody, _cbtHistRender, rowsHtml);
 
@@ -10608,6 +11026,7 @@
           c.lastRate = null;
           c.lastAt = 0;
         }
+        if (Number(c.avgRate) > CBT_MAX_VALID_RATE) c.avgRate = CBT_MAX_VALID_RATE; /* v23.9.256 (C6): clamp stored avgRate */
         clean[dk][a] = c;
       }
       clean[dk] = sanitizeHistory(clean[dk]);
@@ -10686,6 +11105,8 @@
     if(weeklySearchTerm){var term=weeklySearchTerm.toLowerCase();filtered=ranked.filter(function(e){return e.assoc.toLowerCase().indexOf(term)!==-1;});filtered=prioritizeNameMatches(filtered,term,function(e){return e.assoc;});}
     var rowsHtml=[];
     for(var i=0;i<filtered.length;i++){
+      /* v23.9.256 (R9): one bad row must not abort the whole Weekly render. */
+      try {
       var e=filtered[i],bestRate=Number(e.bestRate)||0;
       var rateCls=bestRate>=WARN_RATE?'good':bestRate>=ALERT_RATE?'warn':'alert';
       var rk=e._displayRank||0;
@@ -10697,6 +11118,7 @@
         +'<td>'+(bestRate>0?'<span class="cbt-hist-rate '+rateCls+'">'+bestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td>'
         +'<td>'+(latestRate>0?'<span class="cbt-hist-rate '+latestCls+'">'+latestRate.toFixed(1)+'</span>':'<span class="cbt-hist-meta">—</span>')+'</td>'
         +'<td><span class="cbt-hist-meta">'+fmtHours(e.totalSec)+'</span></td></tr>');
+      } catch(eWeekRow) {}
     }
     cbtPaintRowsChunked(tbody, _cbtWeeklyRender, rowsHtml);
 
@@ -10729,11 +11151,12 @@
        the "+N more" count are all unchanged. */
     var matches = [];
     var _cachedNames = cbtSortedNames();
-    var names = _cachedNames.names, keys = _cachedNames.keys || [];
+    var names = _cachedNames.names, keys = _cachedNames.keys || [], lower = _cachedNames.lower || [];
     for (var i = 0; i < names.length; i++) {
       var n = names[i];
-      var k = keys[i] || n.toLowerCase();
-      if (n.toLowerCase().indexOf(term) !== -1 && (!excludeSet || !excludeSet.has(k))) matches.push(n);
+      var _nl = lower[i] || n.toLowerCase();
+      var k = keys[i] || _nl;
+      if (_nl.indexOf(term) !== -1 && (!excludeSet || !excludeSet.has(k))) matches.push(n);
     }
     if (!matches.length) return '';
     matches = prioritizeNameMatches(matches, term, function(n){ return n; });
@@ -10772,7 +11195,10 @@
     pairs.sort(function(a,b){ return a.n.toLowerCase().localeCompare(b.n.toLowerCase()); });
     var names = pairs.map(function(p){ return p.n; });
     var keys = pairs.map(function(p){ return p.k; });
-    _cbtNamesSortedCache = { names: names, keys: keys, totalCount: names.length };
+    /* v23.9.256 (L5a): the lowercased names are computed once per version
+       alongside the sort, instead of once per name per keystroke. */
+    var lower = pairs.map(function(p){ return p.n.toLowerCase(); });
+    _cbtNamesSortedCache = { names: names, keys: keys, lower: lower, totalCount: names.length };
     _cbtNamesSortedCacheKey = key;
     return _cbtNamesSortedCache;
   }
@@ -10862,7 +11288,9 @@
     var entries = Object.values(history).filter(function(e){ return e.assoc.toLowerCase().indexOf(term)!==-1; });
     entries = prioritizeNameMatches(entries, term, function(e){ return e.assoc; });
     var shown = new Set();
-    pruneWeeklyOlderThan(WEEKLY_DAYS);        /* side effect kept as-is */
+    /* v23.9.256 (L5b): the pruneWeeklyOlderThan side effect is gone — it
+       is not search work, and the prune already runs on its own cadence
+       (cbtResetTodayForNewDay / startup). Cross-search only reads. */
     /* This used to iterate pruneWeeklyOlderThan's return value, but that
        function returns nothing — Object.keys(undefined) threw and the
        cross-search below never rendered. Read the weekly data directly. */
@@ -10916,6 +11344,7 @@
 
   /* ── Task Detail Panel ── */
   var _tpRef = null, _tpLiveTerm = '';
+  var _cbtTpVerifiedTimer = null, _cbtTpVerifiedTerm = '';
 
   function buildTaskPanel() {
     var p = document.createElement('div');
@@ -10944,14 +11373,13 @@
     return p;
   }
 
-  function tpRenderSearch(term) {
-    var el = document.getElementById('cbt-tp-results'); if (!el) return;
-    if (!term || !term.trim()) { el.innerHTML = ''; return; }
-    term = term.toLowerCase().trim();
+  /* v23.9.256 (L5c + R9): the Live half of Task Panel search, shared by
+     the instant render and the full (debounced) render so both show the
+     same Live rows. One bad Live row is skipped, not fatal (R9). */
+  function tpLiveSearchHTML(term, seen) {
     var html = '';
-    var seen = new Set();
-
     taskCache.forEach(function(d){
+      try {
       if (cbtIsLiveBatch(d)) {
         var name = (d.associateId||d.associate||d.driverAssignment||d.shortClientRef||'').toLowerCase();
         if (name.indexOf(term) !== -1 && !seen.has(name)) {
@@ -10962,15 +11390,48 @@
           html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + displayName + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + (r.scanRate?r.scanRate.toFixed(1):'—') + '</span></div>';
         }
       }
+      } catch(eTpLiveRow) {}
     });
+    return html;
+  }
+  /* v23.9.256 (L5c): Live rows render immediately on every keystroke;
+     the verified half (Today / Weekly / Saved Names) follows on a
+     150 ms trailing timer via cbtScheduleTpVerifiedSearch below. */
+  function tpRenderSearchLive(term) {
+    var el = document.getElementById('cbt-tp-results'); if (!el) return;
+    if (!term || !term.trim()) { el.innerHTML = ''; return; }
+    var seen = new Set();
+    setHTML(el, tpLiveSearchHTML(term.toLowerCase().trim(), seen));
+  }
+  function cbtScheduleTpVerifiedSearch(term) {
+    _cbtTpVerifiedTerm = term == null ? '' : String(term);
+    if (_cbtTpVerifiedTimer) { clearTimeout(_cbtTpVerifiedTimer); _cbtTpVerifiedTimer = null; }
+    if (!_cbtTpVerifiedTerm.trim()) { try { tpRenderSearch(''); } catch(e) {} return; }
+    _cbtTpVerifiedTimer = setTimeout(function(){
+      _cbtTpVerifiedTimer = null;
+      try { tpRenderSearch(_cbtTpVerifiedTerm); } catch(e2) {}
+    }, 150);
+  }
 
-    var hist = getDisplayHistory(); /* v23.9.243: the cached display history (1.5 s cache, merged own+remote, avgRate recomputed), not a fresh loadHistory() parse + merge on every keystroke of a Task Panel search. */
+  function tpRenderSearch(term) {
+    var el = document.getElementById('cbt-tp-results'); if (!el) return;
+    if (!term || !term.trim()) { el.innerHTML = ''; return; }
+    term = term.toLowerCase().trim();
+    var html = '';
+    var seen = new Set();
+
+    html += tpLiveSearchHTML(term, seen);
+
+    var hist = getDisplayHistory(); /* v23.9.243: the cached display history (10 s cache since v23.9.256, merged own+remote, avgRate recomputed), not a fresh loadHistory() parse + merge on every keystroke of a Task Panel search. */
     Object.values(hist).forEach(function(e){
+      /* v23.9.256 (R9): one bad row must not abort the Task Panel search. */
+      try {
       if (e.assoc.toLowerCase().indexOf(term) !== -1 && !seen.has(e.assoc.toLowerCase())) {
         seen.add(e.assoc.toLowerCase());
         var rc = e.avgRate>=WARN_RATE?'color:#2a9d2a':e.avgRate>=ALERT_RATE?'color:#e6a817':'color:#cc0000';
         html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + e.avgRate.toFixed(1) + '</span></div>';
       }
+      } catch(eTpHistRow) {}
     });
 
     var weekly = cbtVerifiedWeek(), agg = {};
@@ -10982,12 +11443,15 @@
       }
     }
     Object.values(agg).forEach(function(e){
+      /* v23.9.256 (R9): one bad row must not abort the Task Panel search. */
+      try {
       if (!seen.has(e.assoc.toLowerCase())) {
         seen.add(e.assoc.toLowerCase());
-        var avg = e.totalPkgs/(e.totalSec/60);
+        var avg = e.totalSec>0 ? e.totalPkgs/(e.totalSec/60) : 0; /* v23.9.256 (R10): divide-by-zero guard */
         var rc = avg>=WARN_RATE?'color:#2a9d2a':avg>=ALERT_RATE?'color:#e6a817':'color:#cc0000';
-        html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + avg.toFixed(1) + '</span></div>';
+        html += '<div class="cbt-tp-row"><span class="cbt-tp-row-name" role="button" tabindex="0" title="Open associate profile">' + afaEsc(e.assoc) + '</span><span class="cbt-tp-row-mid"></span><span class="cbt-tp-row-rate" style="' + rc + ';">' + (isFinite(avg) ? avg.toFixed(1) : '—') + '</span></div>';
       }
+      } catch(eTpWeekRow) {}
     });
 
     // Saved names — anyone captured from localStorage/sync who isn't already shown above
@@ -11054,7 +11518,9 @@
   }
   var _cbtActiveDragStops = new Set();
   function cbtCancelUiDrags() {
-    Array.from(_cbtActiveDragStops).forEach(function(stop){ stop(); });
+    /* v23.9.256 (R5): one throwing finish() used to abort onRoute
+       mid-route with the route already marked handled. */
+    Array.from(_cbtActiveDragStops).forEach(function(stop){ try { stop(); } catch(eDragStop) {} });
   }
   function cbtBindMouseDrag(handle, start, move, finish, connected) {
     var active=false, frame=null, latest=null;
@@ -11206,7 +11672,10 @@
     tp.addEventListener('input', function(e){
       if (e.target.id === 'cbt-tp-search-input') {
         _tpLiveTerm = e.target.value;
-        tpRenderSearch(_tpLiveTerm);
+        /* v23.9.256 (L5c): Live narrows instantly; the verified half is
+           debounced 150 ms trailing. */
+        tpRenderSearchLive(_tpLiveTerm);
+        cbtScheduleTpVerifiedSearch(_tpLiveTerm);
       }
     });
 
@@ -11214,7 +11683,7 @@
     tp.addEventListener('click', function(e){
       if (e.target.id === 'cbt-tp-search-clear') {
         var i = tp.querySelector('#cbt-tp-search-input');
-        if (i) { i.value = ''; _tpLiveTerm = ''; tpRenderSearch(''); }
+        if (i) { i.value = ''; _tpLiveTerm = ''; if (_cbtTpVerifiedTimer) { clearTimeout(_cbtTpVerifiedTimer); _cbtTpVerifiedTimer = null; } tpRenderSearch(''); }
       }
 
     });
@@ -11348,8 +11817,8 @@
      QR CODE FROM SELECTED TEXT
      Highlight any text on the page and a centered QR popup appears
      encoding it. The text field below the code is editable and the
-     QR redraws live as you type. Click outside the card (or press
-     Esc) to close. The encoder library is embedded, so QR
+     QR redraws live as you type. Click outside the card
+     to close. The encoder library is embedded, so QR
      generation is instant, offline, and needs no external requests.
      qrcode-generator (MIT, Kazuhiko Arase) embedded below.
   ══════════════════════════════════════ */
@@ -11357,12 +11826,22 @@
 
   var _qrOverlay = null;
   var _qrRenderRAF = 0;
+  var _qrLastRenderedText = null; /* v23.9.256 (L11): last rendered text — same-text refresh skips the re-encode */
   var _qrLastOpenedText = '';
   var _qrClosedText = '', _qrClosedAt = 0; /* v23.9.243: text + time of the last close — a mouseup on the same text within 1.5 s must not reopen the popup */
+  var _qrClosedPressSeq = 0; /* v23.9.255: _cbtQrPressSeq at the last close */
   var _qrSelectionRoot = null; /* v23.9.243: open shadow root holding the selection (if any), so qrClose can clear it too */
   var _qrOutsideHandler = null;
+  var _qrBlurHandler = null; /* v23.9.256 (R8): window blur handler, removed in qrTeardown */
+  /* v23.9.254: dismissal is outside-click only (no auto-close, no
+     Escape). An outside mousedown only ARMS the dismissal — see
+     qrOutsideIsEcho / the armed-press watch in qrOpen. */
+  var _qrOutsidePress = null; /* {x, y, at} once an outside press arms */
+  var _qrOutsideMoveHandler = null, _qrOutsideUpHandler = null,
+      _qrOutsideCancelHandler = null;
+  var _qrOpenedAt = 0; /* Date.now() of the last open (echo guard) */
+  var _qrOpenedPointerType = 'mouse'; /* pointerType that opened it */
   var _qrSelectionTimer = 0;
-  var _qrAutoCloseTimer = 0;
   var _qrDragCleanup = null;
   var QR_POSITION_KEY = 'cbt_qr_snap_position_v23953';
   var QR_DEFAULT_POSITION = 'bottom-right';
@@ -11443,9 +11922,6 @@
     var nextPos = qrSavePosition(row + '-' + cols[nextIdx]);
     qrApplyPosition(nextPos);
 
-    /* Moving the QR by arrow gives a fresh full 60 seconds. */
-    qrStartAutoClose();
-
   }
 
   /* Snap a dragged QR card only along the bottom row:
@@ -11461,14 +11937,6 @@
 
     /* Dragging upward never moves the QR upward. It always stays on bottom. */
     return 'bottom-' + col;
-  }
-
-  function qrStartAutoClose() {
-    if (_qrAutoCloseTimer) clearTimeout(_qrAutoCloseTimer);
-    _qrAutoCloseTimer = setTimeout(function(){
-      _qrAutoCloseTimer = 0;
-      if (_qrOverlay && _qrOverlay.isConnected) qrClose();
-    }, 60000);
   }
 
   function qrEnableSnapDrag(card) {
@@ -11497,10 +11965,6 @@
 
       var pos = qrSavePosition(qrSnapPositionFromPoint(lastX, lastY));
       qrApplyPosition(pos);
-
-      /* A manual drag counts as activity: restart the full 60-second timer
-         from the moment the QR is dropped into its new snap position. */
-      qrStartAutoClose();
 
       try {
         if (pointerId !== null && head.releasePointerCapture) {
@@ -11559,9 +12023,12 @@
     if (!host) return;
 
     text = String(text || '');
+    /* v23.9.256 (L11): same text as the last render — skip the re-encode. */
+    if (text === _qrLastRenderedText) return;
     if (!text.trim()) {
       host.innerHTML = '';
       if (err) err.style.display = 'none';
+      _qrLastRenderedText = text;
       return;
     }
 
@@ -11600,12 +12067,14 @@
         err.textContent = '';
         err.style.display = 'none';
       }
+      _qrLastRenderedText = text;
     } catch(e) {
       host.innerHTML = '';
       if (err) {
         err.textContent = 'Could not generate QR code';
         err.style.display = 'block';
       }
+      _qrLastRenderedText = null;
       try { console.warn('[CBT QR] QR generation failed:', e); } catch(ignore) {}
     }
   }
@@ -11624,11 +12093,48 @@
     });
   }
 
-  function qrTeardown() {
-    if (_qrAutoCloseTimer) {
-      clearTimeout(_qrAutoCloseTimer);
-      _qrAutoCloseTimer = 0;
+  /* v23.9.254: remove the armed-press watch (move/up/cancel listeners)
+     and forget the press. Idempotent — safe to call from qrTeardown,
+     from the mouseup handler itself, and from a press inside the card. */
+  function qrClearOutsideWatch() {
+    if (_qrOutsideMoveHandler) {
+      try { document.removeEventListener('mousemove', _qrOutsideMoveHandler, true); } catch(e) {}
+      _qrOutsideMoveHandler = null;
     }
+    if (_qrOutsideUpHandler) {
+      try { document.removeEventListener('mouseup', _qrOutsideUpHandler, true); } catch(e) {}
+      _qrOutsideUpHandler = null;
+    }
+    if (_qrOutsideCancelHandler) {
+      try { document.removeEventListener('pointercancel', _qrOutsideCancelHandler, true); } catch(e) {}
+      _qrOutsideCancelHandler = null;
+    }
+    _qrOutsidePress = null;
+  }
+
+  /* v23.9.254: is this mousedown the compatibility echo of the touch/pen
+     gesture that just opened the popup? Chrome dispatches a synthetic
+     mousedown after the pointerup of a touch drag-select (and pen
+     drag-selects dispatch one too, with no firesTouch signal to tell it
+     apart — hence the timing-only pen branch). A real mouse press is
+     never an echo; a real touch/pen tap more than 500 ms after the open
+     still dismisses. */
+  function qrOutsideIsEcho(e) {
+    if (!_qrOverlay || !_qrOpenedAt) return false;
+    if (Date.now() - _qrOpenedAt >= QR_OPEN_ECHO_MS) return false;
+    if (_qrOpenedPointerType === 'touch') {
+      try { return !!(e && e.sourceCapabilities && e.sourceCapabilities.firesTouch); } catch(e2) { return false; }
+    }
+    if (_qrOpenedPointerType === 'pen') return true;
+    return false;
+  }
+
+  function qrTeardown() {
+    qrClearOutsideWatch();
+    /* v23.9.256 (R8): the blur listener is registered with the outside
+       handler in qrOpen and removed here, so it cannot accumulate. */
+    if (_qrBlurHandler) { try { window.removeEventListener('blur', _qrBlurHandler, true); } catch(eB) {} _qrBlurHandler = null; }
+    _qrLastRenderedText = null;
     if (_qrDragCleanup) {
       try { _qrDragCleanup(); } catch(eDrag) {}
       _qrDragCleanup = null;
@@ -11654,6 +12160,7 @@
     var _closedText = _qrLastOpenedText;
     qrTeardown();
     _qrClosedText = _closedText; _qrClosedAt = Date.now();
+    _qrClosedPressSeq = _cbtQrPressSeq;
     /* The page text stays highlighted behind the popup. Left alone, a later
        mouseup would read that same selection and reopen the popup on its
        own. Dropping the selection means closed stays closed until a NEW
@@ -11677,6 +12184,11 @@
   function qrOpen(text) {
     text = String(text || '').trim();
     if (!text) return;
+    /* v23.9.254: a fresh open (or re-highlight of the same text) starts
+       a new echo window — the opening gesture's own compatibility
+       mousedown must not dismiss what it just opened. No auto-close any
+       more: once open, the popup stays until an outside click. */
+    _qrOpenedAt = Date.now();
 
     /* Same text + already open = no DOM rebuild. But the user may have
        edited the input since opening — reset the field to the selected
@@ -11686,9 +12198,6 @@
       var _sameInput = _qrOverlay.querySelector('#cbt-qr-input');
       if (_sameInput) _sameInput.value = text;
       qrRender(text);
-      /* v23.9.253: re-highlighting the same text is fresh interaction —
-         restart the 60s auto-close, or the popup could close ~1s later. */
-      qrStartAutoClose();
       return;
     }
 
@@ -11721,6 +12230,10 @@
 
     var card = _qrOverlay.querySelector('#cbt-qr-card');
     var input = _qrOverlay.querySelector('#cbt-qr-input');
+    /* v23.9.256 (R11): a null input used to be dereferenced before the
+       outside-dismiss handler was registered, leaving an orphaned popup
+       with no dismiss path. Tear down instead. */
+    if (!input) { qrTeardown(); return; }
     input.value = text;
 
     var qrLeftBtn = _qrOverlay.querySelector('#cbt-qr-left');
@@ -11753,24 +12266,57 @@
 
     /* The page stays completely clear/clickable. A temporary document listener
        exists ONLY while the small QR card is open and only checks one contains()
-       call. Clicking elsewhere closes the card without blocking COMO. */
-    /* v23.9.243: close immediately on mousedown outside, like the
-       any-site popup. The old 80 ms selection check left the popup open
-       after an outside click whenever any text was selected — there was
-       no way to dismiss it except Escape. (v23.9.244: the ✕ button was
-       removed from the popup header, so outside-click and Escape are the
-       ways to close it.)
-       A mousedown that starts a NEW drag-select still works: the mouseup
-       reopens with the new text (the closed-text check only blocks the
-       exact text that was just closed). */
+       call. */
+    /* v23.9.254: dismissal is by outside CLICK only — no auto-close, no
+       Escape. A mousedown outside only ARMS the dismissal; the popup
+       closes on the mouseup, and only if the press did not move. A press
+       that moves more than QR_OUTSIDE_DRAG_PX is a (re)highlight drag,
+       not a click: the dismissal is cancelled and the drag's mouseup
+       reopens/refreshes through the normal selection queue — so a fast
+       highlight that is immediately re-dragged to fix it can no longer
+       make the popup vanish. The closing mouseup is the same event the
+       queue reads, and qrClose() drops the page selection, so it cannot
+       reopen the popup. Clicks inside the card never arm anything.
+       (v23.9.243 note, superseded: the old code closed immediately on
+       mousedown outside — that is exactly the race this fixes.) */
     _qrOutsideHandler = function(e) {
-      if (!_qrOverlay || !card || card.contains(e.target)) return;
-      qrClose();
+      if (!_qrOverlay || !card || card.contains(e.target)) { qrClearOutsideWatch(); return; }
+      if (qrOutsideIsEcho(e)) return;
+      if (_qrOutsidePress) qrClearOutsideWatch();
+      var _qx = (e && isFinite(e.clientX)) ? e.clientX : 0;
+      var _qy = (e && isFinite(e.clientY)) ? e.clientY : 0;
+      _qrOutsidePress = { x: _qx, y: _qy, at: Date.now() };
+      _qrOutsideMoveHandler = function(ev) {
+        if (!_qrOutsidePress) return;
+        var _mx = (ev && isFinite(ev.clientX)) ? ev.clientX : _qx;
+        var _my = (ev && isFinite(ev.clientY)) ? ev.clientY : _qy;
+        if (Math.abs(_mx - _qrOutsidePress.x) > QR_OUTSIDE_DRAG_PX ||
+            Math.abs(_my - _qrOutsidePress.y) > QR_OUTSIDE_DRAG_PX) {
+          qrClearOutsideWatch();
+        }
+      };
+      _qrOutsideUpHandler = function() {
+        var _press = _qrOutsidePress;
+        qrClearOutsideWatch();
+        if (!_press || !_qrOverlay) return;
+        if (Date.now() - _press.at > 10000) return;
+        qrClose();
+      };
+      _qrOutsideCancelHandler = function() { qrClearOutsideWatch(); };
+      document.addEventListener('mousemove', _qrOutsideMoveHandler, true);
+      document.addEventListener('mouseup', _qrOutsideUpHandler, true);
+      document.addEventListener('pointercancel', _qrOutsideCancelHandler, true);
     };
     document.addEventListener('mousedown', _qrOutsideHandler, true);
 
+    /* v23.9.256 (R8): a window blur while a press is armed means its
+       mouseup may never arrive (alt-tab / window switch) — clear the
+       armed watch instead of leaving it armed. The 10 s stale rule for
+       the press itself is unchanged. */
+    _qrBlurHandler = function(){ if (_qrOutsidePress) qrClearOutsideWatch(); };
+    try { window.addEventListener('blur', _qrBlurHandler, true); } catch(eBlurReg) { _qrBlurHandler = null; } /* v23.9.256 (R8): registration is guarded like every other listener here — a host without window.addEventListener must not break the popup */
+
     qrRender(text);
-    qrStartAutoClose();
   }
 
   function qrCleanSelectedText(value) {
@@ -11878,12 +12424,15 @@
   function qrOpenCurrentSelection(event) {
     var selected = qrSelectionText(event);
     if (!selected) return;
-    /* v23.9.243: same closed-text suppression as the any-site path (see
-       qaOpenCurrentSelection). The dead _qrSuppressNextMouseup flag this
-       replaced was never set — and setting it would have dropped a
-       legitimate fresh selection made right after a close. */
-    if (selected === _qrClosedText && Date.now() - _qrClosedAt < 1500) return;
+    /* v23.9.255: same closed-text suppression as the any-site path (see
+       qaOpenCurrentSelection), now gated on the press sequence: it only
+       blocks the closing click's own trailing read. A fresh press after
+       the close (a new double-click, a new drag) is a deliberate
+       re-highlight of the same text, so it opens again. */
+    if (selected === _qrClosedText && Date.now() - _qrClosedAt < 1500 &&
+        _qrClosedPressSeq === _cbtQrPressSeq) return;
     _qrSelectionRoot = cbtShadowSelectionRoot(event);
+    _qrOpenedPointerType = (event && event.pointerType) || 'mouse';
     qrOpen(selected);
   }
 
@@ -11908,6 +12457,7 @@
        recycled. composedPath() is captured now for shadow-root support. */
     var snapshot = {
       target: event ? event.target : null,
+      pointerType: event ? event.pointerType : undefined,
       route: location.href,
       path: []
     };
@@ -11928,6 +12478,10 @@
     }, 0);
   }
 
+  /* v23.9.255: start the shared press sequence on the COMO path —
+     this code only runs after the COMO gate and the v241 frame guard. */
+  cbtQrStartPressSeq();
+
   /* Restored QR feature. Capture phase is intentional: some COMO/KAT
      components stop mouse/pointer events before they bubble to document.
      Capture lets the QR feature see the completed selection without adding
@@ -11947,9 +12501,8 @@
     qrQueueSelectionOpen(e);
   }, true);
 
-  document.addEventListener('keydown', function(e) {
-    if (e && e.key === 'Escape' && _qrOverlay) qrClose();
-  }, true);
+  /* v23.9.254: no Escape close any more — dismissal is outside-click
+     only, so the popup stays up however long the user wants it. */
 
 
   /* ══════════════════════════════════════
@@ -12096,6 +12649,7 @@
   var _p1hPumpTimer = null;
   var _p1hPersistTimer = null;
   var _p1hLastScanAt = 0;
+  var _p1hLastFullScanAt = 0, _p1hLastScanSig = ''; /* v23.9.256 (L8): last full visible scan + card signature */
   var _p1hStartupReadyAt = Date.now() + P1H_STARTUP_DELAY_MS;
   var _p1hLiveSignatures = new Map();
 
@@ -12360,6 +12914,24 @@
   function p1hScanVisibleTasks() {
     if (!isDashboardView() || document.hidden) return;
     var now = Date.now();
+    /* v23.9.256 (L8): skip a re-walk when the last full scan was under 2 s
+       ago and the visible cards look unchanged (same count, same first
+       and last card identity — a cheap proxy for "no card identity
+       changed", bounded to 2 s). The queue already holds any ids it is
+       still fetching (_p1hQueued / _p1hInFlight are checked per card
+       below), so a skipped scan loses nothing. */
+    var _sigCards = null;
+    try { _sigCards = document.querySelectorAll('job-card'); } catch(eSig) { _sigCards = null; }
+    var _sigCount = _sigCards ? _sigCards.length : 0;
+    var _sigFirst = '', _sigLast = '';
+    try {
+      if (_sigCount) {
+        var _sigF = p1hCardIdentity(_sigCards[0]); if (_sigF) _sigFirst = String(_sigF.id || '');
+        var _sigL = p1hCardIdentity(_sigCards[_sigCount - 1]); if (_sigL) _sigLast = String(_sigL.id || '');
+      }
+    } catch(eSig2) {}
+    var _sig = _sigCount + '|' + _sigFirst + '|' + _sigLast;
+    if (now - _p1hLastFullScanAt < 2000 && _sig === _p1hLastScanSig) return;
     var visibleIds = new Set();
     _p1hVisibleCards = new Map();
     document.querySelectorAll('job-card').forEach(function(card){
@@ -12390,6 +12962,7 @@
       _p1hQueued = new Set(_p1hQueue.map(function(item){ return item.id; }));
     }
 
+    _p1hLastFullScanAt = now; _p1hLastScanSig = _sig;
     /* Bound memory without disturbing cached tasks still visible on screen. */
     if (_p1hCache.size > 500) {
       _p1hCache.forEach(function(entry, id){
@@ -13302,7 +13875,7 @@
             entries.push({
               missingId: sid,
               packageStatus: packageStatus,
-              cart: packages[i].cart || item.cart || info.cart || '',
+              cart: info.cart || item.cart || packages[i].cart || '',
               location: afaMissingText(packages[i].location),
               ref: info.ref || item.ref || '',
               id: info.id || item.id || '',
@@ -13345,7 +13918,7 @@
       out.push({
         missingId: sid,
         packageStatus: afaMissingText(packages[i] && packages[i].status).toUpperCase() || 'MISSING',
-        cart: packages[i].cart || info.cart || '',
+        cart: info.cart || packages[i].cart || '',
         location: afaMissingText(packages[i].location),
         ref: info.ref || '',
         id: info.id || '',
@@ -15021,9 +15594,17 @@
       else if (idx > 0) mid.push(all[k]);
       if (pre.length + mid.length > 400) break;
     }
+    /* v23.9.256 (L10): sort only as many rows as can be shown. Prefix
+       matches come first, so when they already fill AC_MAX_ROWS the
+       contains-matches are never sorted at all; otherwise only the
+       remaining slots of `mid` are sorted. `total` is unchanged. No
+       observer early-return (a modal opening via an attribute-only
+       mutation could be missed). */
     function byName(a, b){ return a.toLowerCase().localeCompare(b.toLowerCase()); }
-    pre.sort(byName); mid.sort(byName);
-    return { rows: pre.concat(mid).slice(0, AC_MAX_ROWS), total: pre.length + mid.length };
+    pre.sort(byName);
+    var shown = pre.slice(0, AC_MAX_ROWS);
+    if (shown.length < AC_MAX_ROWS) shown = shown.concat(mid.sort(byName).slice(0, AC_MAX_ROWS - shown.length));
+    return { rows: shown, total: pre.length + mid.length };
   }
 
   function acEsc(s) {
@@ -15457,7 +16038,15 @@
     });
   }
   window.addEventListener('resize',cbtScheduleUiScale);
-  window.addEventListener('scroll', function(){ if (_acDrop) acPlace(); }, true);
+  var _cbtAcPlaceFrame = null;
+  /* v23.9.256 (L13): scroll fires far more often than frames — coalesce
+     acPlace() through the same rAF pattern as cbtScheduleUiScale. */
+  function cbtScheduleAcPlace(){
+    if (_cbtAcPlaceFrame !== null) return;
+    var raf = (typeof requestAnimationFrame === 'function') ? requestAnimationFrame : function(cb){ return setTimeout(cb, 16); };
+    _cbtAcPlaceFrame = raf(function(){ _cbtAcPlaceFrame = null; try { if (_acDrop) acPlace(); } catch(e) {} });
+  }
+  window.addEventListener('scroll', function(){ if (_acDrop) cbtScheduleAcPlace(); }, true);
   var _acObserver = null;
 
   function acWatchRelevant() {
@@ -15698,7 +16287,11 @@
        desktop came back without a number until the next 10s scan.
        This runs before the first paint of the newly visible page, so
        the number is back the moment the user looks at the dashboard. */
-    try { if (isDashboardView()) { injectAllTimers(); tickTimers(); } } catch(e9t) {}
+    /* v23.9.256 (L2): injectAllTimers() only — it creates the cells, so
+       the numbers are back the moment the user looks. tickTimers() runs
+       on its next 1s tick (the setInterval in the startup block), not
+       synchronously here before first paint. */
+    try { if (isDashboardView()) { injectAllTimers(); } } catch(e9t) {}
     /* v23.9.253: the full-body P1H scan below is REMOVED — the visible
        scan scheduled on the same line re-scans the visible cards anyway,
        so this was a second full job-card walk on every return,
@@ -15741,6 +16334,10 @@
       }
       if (route === lastHandledRoute) return;
       lastHandledRoute = route;
+      /* v23.9.256 (R5): the route is marked handled above and stays marked
+         even if the body below throws — a half-handled route must not
+         re-run, and a throw must not leave the dashboard unmounted. */
+      try {
       cbtCancelUiDrags();
       if (_qrSelectionTimer) { clearTimeout(_qrSelectionTimer); _qrSelectionTimer = 0; }
       if (routeUiTimer !== null) { clearTimeout(routeUiTimer); routeUiTimer = null; }
@@ -15804,13 +16401,15 @@
         if (location.pathname + location.search + location.hash === route) taskPanelHealthCheck();
       },0);
       if (isDashboardView()) {
-        try { p1hApplyCachedToNode(document.body); } catch(eP1hImmediate) {}
+        /* v23.9.256 (L2): the synchronous full-body scan is gone — the
+           scheduled visible scan on the next line already covers it. */
         try { p1hScheduleVisibleScan(); } catch(eP1hRoute) {}
         highlightRetry = setTimeout(function(){
           highlightRetry = null;
           if (isDashboardView()) { try { p1hScheduleVisibleScan(); } catch(eP1hRoute2) {} }
         }, 450);
       }
+      } catch (eRoute) {}
     }
 
     var _push = history.pushState, _repl = history.replaceState;
@@ -16353,7 +16952,7 @@
       if ([STORAGE_KEY,OWN_WEEKLY_KEY,REMOTE_HISTORY_KEY,REMOTE_WEEKLY_KEY,ALL_NAMES_KEY,HOF_PEAKS_KEY,HOF_LATEST_KEY,HOF_REMOTE_KEY,HOF_OWN_KEY].indexOf(event.key) === -1) return;
       if (event.key === ALL_NAMES_KEY) { _allNamesCache = null; try { cbtBumpNamesVersion(); } catch(e) {} }
       else { if (typeof cbtBumpHistoryDataVersion === 'function') cbtBumpHistoryDataVersion(); cbtProfileChanged(); }
-      if ([HOF_PEAKS_KEY, HOF_LATEST_KEY, HOF_REMOTE_KEY, HOF_OWN_KEY].indexOf(event.key) !== -1) { try { cbtInvalidateHofRows(); } catch(e) {} }
+      if ([HOF_PEAKS_KEY, HOF_LATEST_KEY, HOF_REMOTE_KEY, HOF_OWN_KEY].indexOf(event.key) !== -1) { try { cbtInvalidateHofRows(); } catch(e) {} try { _cbtHofStoredRawKey = null; } catch(eHofKey) {} /* v23.9.256 (L7): another tab rewrote the blobs — the stored hash must be recomputed */ }
       if(event.key===OWN_WEEKLY_KEY || event.key===REMOTE_WEEKLY_KEY)_cbtWeeklyPrunedScope='';
       cbtScheduleReportRefresh();
     });
